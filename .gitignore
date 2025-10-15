@@ -1,0 +1,5 @@
+venv/
+.env
+test_qnli.ipynb
+notes.ipynb
+ΠΡΟΤΑΣΗ ΕΡΕΥΝΑΣ ΣΕ NLI ΚΑΙ LLMs.pdf
