@@ -3,6 +3,7 @@ import torch
 import re
 import os
 from huggingface_hub import login
+from torch.utils.data import Dataset
 
 def get_lengths(df, tokenizer, dataset_type):
     """ Tokenizes the prompt and label, and returns two lists containing the lengths of each tokenized sequence.
@@ -180,3 +181,69 @@ def hf_login(token_name="HF_TOKEN"):
 
     login(token=token)
     
+
+
+class MyDataset(Dataset):
+    def __init__(self, dataframe, tokenizer, dataset_type, prompt_max_length, label_max_length, training=False):
+        self.dataframe = dataframe
+        self.tokenizer = tokenizer
+        self.dataset_type = dataset_type
+        self.prompt_max_length = prompt_max_length
+        self.label_max_length = label_max_length
+        self.training = training
+        
+
+    def __len__(self):
+        return len(self.dataframe)
+
+    def __getitem__(self, idx):
+        item = self.dataframe.iloc[idx]
+        gold_label = item['label']
+
+        # Format the prompt depending on dataset_type
+        if self.dataset_type == "mnli":
+            sentence1 = "Hypothesis"
+            sentence2 = "Premise"
+            labels = "'contradiction', 'neutral' or 'entailment'"
+        elif self.dataset_type == "qnli":
+            sentence1 = "Sentence"
+            sentence2 = "Question"
+            labels = "'not_entailment' or 'entailment'"
+        elif self.dataset_type == "scitail":
+            sentence1 = "Hypothesis"
+            sentence2 = "Premise"
+            labels = "'neutral' or 'entailment'"
+        else:
+            raise ValueError(f"Invalid type: {self.dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
+        
+        prompt = (f"Does the {sentence1} entail the {sentence2}?" 
+                  f"Answer exactly one word: {labels}. \n{sentence2}: {item[sentence2.lower()]} \n{sentence1}: {item[sentence1.lower()]} \nAnswer:")
+        
+        # Tokenise prompt
+        encoding = self.tokenizer(
+            prompt,
+            truncation=True,
+            padding='max_length',
+            max_length=self.prompt_max_length,
+            return_tensors="pt"
+        ) 
+
+        # Tokenise gold label for training
+        if self.training:
+            gold_label = self.tokenizer(
+            gold_label,
+            truncation=True,
+            padding="max_length",
+            max_length=self.label_max_length, # We found 6 to be the max_length of the labels
+            return_tensors="pt"
+            )
+
+            return {"input_ids": encoding["input_ids"].squeeze(),
+                "attention_mask": encoding["attention_mask"].squeeze(),
+                "labels": gold_label["input_ids"].squeeze(),
+                "prompt": prompt}
+
+        return {"input_ids": encoding["input_ids"].squeeze(),
+                "attention_mask": encoding["attention_mask"].squeeze(),
+                "labels": gold_label,
+                "prompt": prompt}
