@@ -4,6 +4,7 @@ import re
 import os
 from huggingface_hub import login
 from torch.utils.data import Dataset
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, matthews_corrcoef, cohen_kappa_score, ConfusionMatrixDisplay
 
 def get_lengths(df, tokenizer, dataset_type):
     """ Tokenizes the prompt and label, and returns two lists containing the lengths of each tokenized sequence.
@@ -116,10 +117,12 @@ def get_predictions(outputs_decoded, dataset_type):
             raise ValueError(f"Invalid type: {dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
     return predicted_labels
 
+
 def test_run(model, dataloader, tokenizer, dataset_type):
     predictions = []
     batch_sample = next(iter(dataloader))
-    input_ids = {k: v for k, v in batch_sample.items() if k != "labels"}
+    input_ids = {k: v for k, v in batch_sample.items() if k != "labels" and k != "prompt"}
+    gold_labels = batch_sample['labels']
 
     with torch.no_grad():
         outputs = model.generate(**input_ids, max_new_tokens=20)
@@ -129,7 +132,7 @@ def test_run(model, dataloader, tokenizer, dataset_type):
     batch = get_predictions(outputs_decoded, dataset_type=dataset_type)
     predictions.extend(batch)
     
-    return predictions
+    return predictions, gold_labels
 
 
 def load_checkpoint(checkpoint_path):
@@ -181,6 +184,21 @@ def hf_login(token_name="HF_TOKEN"):
 
     login(token=token)
     
+
+def evaluate_metrics(gold_labels, predicted_labels):
+    cm = confusion_matrix(y_true=gold_labels, y_pred=predicted_labels)
+    acc = accuracy_score(y_true=gold_labels, y_pred=predicted_labels)
+    f1 = f1_score(y_true=gold_labels, y_pred=predicted_labels, average='macro')
+    mcc = matthews_corrcoef(y_true=gold_labels, y_pred=predicted_labels)
+    kappa = cohen_kappa_score(y1=gold_labels, y2=predicted_labels)
+    
+    cm_display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=set(gold_labels))
+    cm_display.plot(cmap="Blues")
+    print(f"Accuracy: {acc:.4f}.\n",
+          f"F1 Score: {f1:.4f}.\n",
+          f"Matthew's Correlation Coefficient: {mcc:.4f}.\n",
+          f"Cohen's Kappa Score: {kappa:.4f}.")
+
 
 
 class MyDataset(Dataset):
@@ -240,8 +258,7 @@ class MyDataset(Dataset):
 
             return {"input_ids": encoding["input_ids"].squeeze(),
                 "attention_mask": encoding["attention_mask"].squeeze(),
-                "labels": gold_label["input_ids"].squeeze(),
-                "prompt": prompt}
+                "labels": gold_label["input_ids"].squeeze()}
 
         return {"input_ids": encoding["input_ids"].squeeze(),
                 "attention_mask": encoding["attention_mask"].squeeze(),
