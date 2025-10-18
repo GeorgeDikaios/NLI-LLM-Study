@@ -42,7 +42,7 @@ def get_lengths(df, tokenizer, dataset_type):
     elif dataset_type == "scitail":
         sentence1 = "Hypothesis"
         sentence2 = "Premise"
-        labels = "'neutral' or 'entailment'"
+        labels = "'neutral' or 'entails'"
     else:
         raise ValueError(f"Invalid type: {dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
     
@@ -88,7 +88,7 @@ def find_max_length(df, tokenizer, dataset_type) -> None:
     print("Max label length:", max(label_lengths))
 
 
-def get_predictions(outputs_decoded, dataset_type):
+def get_predictions(outputs_decoded, no_answer, dataset_type):
     predicted_labels = []
 
     for text in outputs_decoded:
@@ -107,7 +107,7 @@ def get_predictions(outputs_decoded, dataset_type):
                 no_answer += 1
                 predicted_labels.append("no_answer")
         elif dataset_type == "scitail":
-            x = re.findall('[e|E]ntailment|[n|N]eutral', text)
+            x = re.findall('[e|E]ntails|[n|N]eutral', text)
             try:
                 predicted_labels.append(x[2].lower())
             except IndexError:
@@ -121,7 +121,7 @@ def get_predictions(outputs_decoded, dataset_type):
 def test_run(model, dataloader, tokenizer, dataset_type):
     predictions = []
     batch_sample = next(iter(dataloader))
-    input_ids = {k: v for k, v in batch_sample.items() if k != "labels" and k != "prompt"}
+    input_ids = {k: v.to(model.device) for k, v in batch_sample.items() if k != "labels" and k != "prompt"}
     gold_labels = batch_sample['labels']
 
     with torch.no_grad():
@@ -230,7 +230,7 @@ class MyDataset(Dataset):
         elif self.dataset_type == "scitail":
             sentence1 = "Hypothesis"
             sentence2 = "Premise"
-            labels = "'neutral' or 'entailment'"
+            labels = "'neutral' or 'entails'"
         else:
             raise ValueError(f"Invalid type: {self.dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
         
