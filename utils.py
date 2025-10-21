@@ -115,7 +115,7 @@ def get_predictions(outputs_decoded, no_answer, dataset_type):
                 predicted_labels.append("no_answer")
         else:
             raise ValueError(f"Invalid type: {dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
-    return predicted_labels
+    return predicted_labels, no_answer
 
 
 def test_run(model, dataloader, tokenizer, dataset_type):
@@ -125,24 +125,43 @@ def test_run(model, dataloader, tokenizer, dataset_type):
     gold_labels = batch_sample['labels']
 
     with torch.no_grad():
-        outputs = model.generate(**input_ids, max_new_tokens=20)
+        outputs = model.generate(**input_ids, max_new_tokens=6)
 
     outputs_decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
 
-    batch = get_predictions(outputs_decoded, dataset_type=dataset_type)
+    batch = get_predictions(outputs_decoded, no_answer=0, dataset_type=dataset_type)
     predictions.extend(batch)
     
     return predictions, gold_labels
 
 
 def load_checkpoint(checkpoint_path):
+    """
+    Loads the file with checkpoint using torch.
+
+    Parameters
+    ----------
+    checkpoint_path: str
+        The path to the file.
+
+    Returns
+    -------
+    predicted_labels: list
+        A list with the predictions of the model.
+    gold_labels: list
+        A list with the gold labels.
+    no_answer: int
+        The number of times the model was unable to give an answer.
+    start_batch: int
+        The batch where the evaluation will continue from.
+    """
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path)
         predicted_labels = checkpoint["predicted_labels"]
         gold_labels = checkpoint["gold_labels"]
         no_answer = checkpoint["no_answer"]
         start_batch = checkpoint['batch_no']
-        print(f"Checkpoint found. Continuing from batch #{start_batch}.")
+        print(f"Checkpoint found.")
     else:
         gold_labels, predicted_labels = [], []
         start_batch = 0
@@ -185,14 +204,23 @@ def hf_login(token_name="HF_TOKEN"):
     login(token=token)
     
 
-def evaluate_metrics(gold_labels, predicted_labels):
+def evaluate_metrics(gold_labels, predicted_labels, dataset_type):
     cm = confusion_matrix(y_true=gold_labels, y_pred=predicted_labels)
     acc = accuracy_score(y_true=gold_labels, y_pred=predicted_labels)
     f1 = f1_score(y_true=gold_labels, y_pred=predicted_labels, average='macro')
     mcc = matthews_corrcoef(y_true=gold_labels, y_pred=predicted_labels)
     kappa = cohen_kappa_score(y1=gold_labels, y2=predicted_labels)
     
-    cm_display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=set(gold_labels))
+    if dataset_type == 'qnli':
+        display_labels = ['entailment', 'not_entailment', 'no_answer']
+    elif dataset_type == 'mnli':
+        display_labels = ['entailment', 'neutral', 'contradiction', 'no_answer']
+    elif dataset_type == 'scitail':
+        display_labels = ['entails', 'neutral', 'no_answer']
+    else:
+        raise ValueError(f"Invalid type: {dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
+
+    cm_display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=display_labels)
     cm_display.plot(cmap="Blues")
     print(f"Accuracy: {acc:.4f}.\n",
           f"F1 Score: {f1:.4f}.\n",
@@ -202,6 +230,7 @@ def evaluate_metrics(gold_labels, predicted_labels):
 
 
 class MyDataset(Dataset):
+
     def __init__(self, dataframe, tokenizer, dataset_type, prompt_max_length, label_max_length, training=False):
         self.dataframe = dataframe
         self.tokenizer = tokenizer
@@ -264,3 +293,62 @@ class MyDataset(Dataset):
                 "attention_mask": encoding["attention_mask"].squeeze(),
                 "labels": gold_label,
                 "prompt": prompt}
+    
+
+def detect_env() -> str:
+    """
+    Detects the environment. Works for Google Colab, Kaggle and local environments.
+
+    Returns
+    -------
+    str
+        one of 'colab', 'kaggle', 'local'
+    """
+    try:
+        import google.colab
+        return 'colab'
+    except ImportError:
+        pass
+
+    if 'KAGGLE_KERNEL_RUN_TYPE' in os.environ:
+        return 'kaggle'
+    
+    return 'local'
+
+def create_checkpoint_path(model_id, name) -> str:
+    """
+    Creates a path string to a checkpoint file.
+
+    If run in Google colab, it creates a folder named 'eval_checkpoints' to save the file there.
+    If run in Kaggle, file is saved in '/kaggle/working'.
+    If run locally, file is saved in the current worrking folder.
+
+    Parameters
+    ----------
+    model_id: str
+        The name of the model being used.
+    name: str
+        The type of evaluation being done. Example: 'scitail_zero_shot'
+
+    Returns
+    -------
+    str:
+        The path to the file.
+    """
+
+    env = detect_env()
+    filename = f"checkpoint_{name}_{model_id.split('/')[1]}.pt".replace('-', '_')
+
+    if env == 'colab':
+        checkpoint_dir = "/content/drive/MyDrive/eval_checkpoints"
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        checkpoint_path = os.path.join(checkpoint_dir, filename)
+    elif env == 'kaggle':
+        checkpoint_dir = "/kaggle/working"
+        checkpoint_path = os.path.join(checkpoint_dir, filename)
+    elif env == 'local':
+        checkpoint_dir = os.getcwd()
+        checkpoint_path = os.path.join(checkpoint_dir, filename)
+
+    print('Saving to:', checkpoint_path)
+    return checkpoint_path
