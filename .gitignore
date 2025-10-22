@@ -3,3 +3,4 @@ venv/
 test_qnli.ipynb
 notes.ipynb
 ΠΡΟΤΑΣΗ ΕΡΕΥΝΑΣ ΣΕ NLI ΚΑΙ LLMs.pdf
+__pycache__/

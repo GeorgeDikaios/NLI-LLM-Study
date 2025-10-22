@@ -2,18 +2,20 @@ import matplotlib.pyplot as plt
 import torch
 import re
 import os
+import pandas
+from typing import Any, Tuple, List
 from huggingface_hub import login
 from torch.utils.data import Dataset
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, matthews_corrcoef, cohen_kappa_score, ConfusionMatrixDisplay
 
-def get_lengths(df, tokenizer, dataset_type):
+def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type) -> Tuple[List[int], List[int]]:
     """ Tokenizes the prompt and label, and returns two lists containing the lengths of each tokenized sequence.
 
     Parameters
     ----------
-    df: pd.DataFrame
+    df: pandas.DataFrame
         A DataFrame containing sentence1, sentence2 and label
-    tokenizer: PreTrainedTokenizerBase
+    tokenizer: Any
         A tokenizer instance via AutoTokenizer.from_pretrained().
     type: str
         The type of dataset.
@@ -23,7 +25,7 @@ def get_lengths(df, tokenizer, dataset_type):
 
     Returns
     -------
-    tuple of lists
+    Tuple[List[int], List[int]]
         - prompt_token_lengths (List[int]): Lengths of prompts
         - label_token_lengths (List[int]): Lengths of labels
     """
@@ -118,7 +120,28 @@ def get_predictions(outputs_decoded, no_answer, dataset_type):
     return predicted_labels, no_answer
 
 
-def test_run(model, dataloader, tokenizer, dataset_type):
+def test_run(model: Any, dataloader: Any, tokenizer: Any, dataset_type: str) -> Tuple[List[str], List[str]]:
+    """
+    Generates predictions using a single batch for testing.
+
+    Parameters
+    ----------
+    model: Any
+        An instance of a model.
+    dataloader: Any
+        An instance of a dataloader.
+    tokenizer:
+        An instance of a tokenizer.
+    dataset_type: str
+        The type of the dataset.
+
+    Returns
+    -------
+    Tuple[List[str], List[str]]
+        A tuple containing two lists:
+            - predictions: A list of strings containing the predictions of the model.
+            - gold_labels: A list of strings containing the equivalent gold labels.
+    """
     predictions = []
     batch_sample = next(iter(dataloader))
     input_ids = {k: v.to(model.device) for k, v in batch_sample.items() if k != "labels" and k != "prompt"}
@@ -129,7 +152,7 @@ def test_run(model, dataloader, tokenizer, dataset_type):
 
     outputs_decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
 
-    batch = get_predictions(outputs_decoded, no_answer=0, dataset_type=dataset_type)
+    batch, _ = get_predictions(outputs_decoded, no_answer=0, dataset_type=dataset_type)
     predictions.extend(batch)
     
     return predictions, gold_labels
@@ -170,14 +193,14 @@ def load_checkpoint(checkpoint_path):
     return predicted_labels, gold_labels, no_answer, start_batch
 
 
-def hf_login(token_name="HF_TOKEN"):
+def hf_login(token_name: str = "HF_TOKEN") -> None:
     """
     Detects environment and logins to HuggingFace. Can handle local from a .env file as well as secrets from Google Colab and Kaggle.
 
     Parameters
     ----------
     token_name: str
-        The name of the token.
+        The name of the token. 'HF_TOKEN' by default
 
     Returns
     -------
@@ -204,8 +227,24 @@ def hf_login(token_name="HF_TOKEN"):
     login(token=token)
     
 
-def evaluate_metrics(gold_labels, predicted_labels, dataset_type):
-    cm = confusion_matrix(y_true=gold_labels, y_pred=predicted_labels)
+def evaluate_metrics(gold_labels: list, predicted_labels: list, dataset_type: str) -> None:
+    """
+    Evaluates and displays the following metrics: Accuracy, F1-Score, Matthew;s Correlation Coefficient, Cohen's Kappa.
+    Also plots the confusion matrix.
+
+    Parameters
+    ----------
+    gold_labels: list
+        A list of the gold labels
+    predicted_labels: list
+        A list with the labels that were predicted
+    dataset_type: str
+        The type of the dataset. One of 'qnli', 'mnli' and 'scitail'.
+
+    Returns
+    -------
+    None
+    """
     acc = accuracy_score(y_true=gold_labels, y_pred=predicted_labels)
     f1 = f1_score(y_true=gold_labels, y_pred=predicted_labels, average='macro')
     mcc = matthews_corrcoef(y_true=gold_labels, y_pred=predicted_labels)
@@ -219,14 +258,14 @@ def evaluate_metrics(gold_labels, predicted_labels, dataset_type):
         display_labels = ['entails', 'neutral', 'no_answer']
     else:
         raise ValueError(f"Invalid type: {dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
-
+    
+    cm = confusion_matrix(y_true=gold_labels, y_pred=predicted_labels, labels=display_labels)
     cm_display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=display_labels)
     cm_display.plot(cmap="Blues")
     print(f"Accuracy: {acc:.4f}.\n",
           f"F1 Score: {f1:.4f}.\n",
           f"Matthew's Correlation Coefficient: {mcc:.4f}.\n",
           f"Cohen's Kappa Score: {kappa:.4f}.")
-
 
 
 class MyDataset(Dataset):
@@ -315,7 +354,8 @@ def detect_env() -> str:
     
     return 'local'
 
-def create_checkpoint_path(model_id, name) -> str:
+
+def create_checkpoint_path(model_id: str, name: str) -> str:
     """
     Creates a path string to a checkpoint file.
 
