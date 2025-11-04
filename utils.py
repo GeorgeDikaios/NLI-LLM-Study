@@ -6,10 +6,12 @@ import pandas
 from typing import Any, Tuple, List
 from huggingface_hub import login
 from torch.utils.data import Dataset
+import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, matthews_corrcoef, cohen_kappa_score, ConfusionMatrixDisplay
 
 def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type) -> Tuple[List[int], List[int]]:
-    """ Tokenizes the prompt and label, and returns two lists containing the lengths of each tokenized sequence.
+    """ 
+    Tokenizes the prompt and label, and returns two lists containing the lengths of each tokenized sequence.
 
     Parameters
     ----------
@@ -90,36 +92,6 @@ def find_max_length(df, tokenizer, dataset_type) -> None:
     print("Max label length:", max(label_lengths))
 
 
-def get_predictions(outputs_decoded, no_answer, dataset_type):
-    predicted_labels = []
-
-    for text in outputs_decoded:
-        if dataset_type == "qnli":
-            x = re.findall('[e|E]ntailment|[n|N]ot_entailment', text)
-            try:
-                predicted_labels.append(x[2].lower())
-            except IndexError:
-                no_answer += 1
-                predicted_labels.append("no_answer")
-        elif dataset_type == "mnli":
-            x = re.findall('[e|E]ntailment|[c|C]ontradiction|[n|N]eutral', text)
-            try:
-                predicted_labels.append(x[3].lower())
-            except IndexError:
-                no_answer += 1
-                predicted_labels.append("no_answer")
-        elif dataset_type == "scitail":
-            x = re.findall('[e|E]ntails|[n|N]eutral', text)
-            try:
-                predicted_labels.append(x[2].lower())
-            except IndexError:
-                no_answer += 1
-                predicted_labels.append("no_answer")
-        else:
-            raise ValueError(f"Invalid type: {dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
-    return predicted_labels, no_answer
-
-
 def test_run(model: Any, dataloader: Any, tokenizer: Any, dataset_type: str) -> Tuple[List[str], List[str]]:
     """
     Generates predictions using a single batch for testing.
@@ -142,20 +114,23 @@ def test_run(model: Any, dataloader: Any, tokenizer: Any, dataset_type: str) -> 
             - predictions: A list of strings containing the predictions of the model.
             - gold_labels: A list of strings containing the equivalent gold labels.
     """
-    predictions = []
-    batch_sample = next(iter(dataloader))
-    input_ids = {k: v.to(model.device) for k, v in batch_sample.items() if k != "labels" and k != "prompt"}
-    gold_labels = batch_sample['labels']
+    labels = get_labels(dataset_type=dataset_type)
+    batch = next(iter(dataloader))
 
-    with torch.no_grad():
-        outputs = model.generate(**input_ids, max_new_tokens=6)
+    input_ids_batch = batch["input_ids"].to(model.device) # Move to GPU
+    attention_mask_batch = batch["attention_mask"].to(model.device) # Move to GPU
+    gold_labels_batch = batch["labels"] # Keep to CPU
 
-    outputs_decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-
-    batch, _ = get_predictions(outputs_decoded, no_answer=0, dataset_type=dataset_type)
-    predictions.extend(batch)
+    batch_probs = get_model_probs(batch_input_ids=input_ids_batch,
+                                  batch_attention_mask=attention_mask_batch,
+                                  dataset_type='scitail',
+                                  model=model,
+                                  tokenizer=tokenizer)
     
-    return predictions, gold_labels
+    batch_pred_indices = torch.argmax(batch_probs)
+    batch_pred_labels = [labels[i] for i in batch_pred_indices]
+    
+    return batch_pred_labels, gold_labels_batch, batch_probs
 
 
 def load_checkpoint(checkpoint_path):
@@ -182,15 +157,13 @@ def load_checkpoint(checkpoint_path):
         checkpoint = torch.load(checkpoint_path)
         predicted_labels = checkpoint["predicted_labels"]
         gold_labels = checkpoint["gold_labels"]
-        no_answer = checkpoint["no_answer"]
         start_batch = checkpoint['batch_no']
         print(f"Checkpoint found.")
     else:
         gold_labels, predicted_labels = [], []
         start_batch = 0
-        no_answer = 0
         print("No checkpoint found.")
-    return predicted_labels, gold_labels, no_answer, start_batch
+    return predicted_labels, gold_labels, start_batch
 
 
 def hf_login(token_name: str = "HF_TOKEN") -> None:
@@ -250,14 +223,7 @@ def evaluate_metrics(gold_labels: list, predicted_labels: list, dataset_type: st
     mcc = matthews_corrcoef(y_true=gold_labels, y_pred=predicted_labels)
     kappa = cohen_kappa_score(y1=gold_labels, y2=predicted_labels)
     
-    if dataset_type == 'qnli':
-        display_labels = ['entailment', 'not_entailment', 'no_answer']
-    elif dataset_type == 'mnli':
-        display_labels = ['entailment', 'neutral', 'contradiction', 'no_answer']
-    elif dataset_type == 'scitail':
-        display_labels = ['entails', 'neutral', 'no_answer']
-    else:
-        raise ValueError(f"Invalid type: {dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
+    display_labels = get_labels(dataset_type=dataset_type)
     
     cm = confusion_matrix(y_true=gold_labels, y_pred=predicted_labels, labels=display_labels)
     cm_display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=display_labels)
@@ -294,7 +260,7 @@ class MyDataset(Dataset):
         elif self.dataset_type == "qnli":
             sentence1 = "Sentence"
             sentence2 = "Question"
-            labels = "'not_entailment' or 'entailment'"
+            labels = "'not entailment' or 'entailment'"
         elif self.dataset_type == "scitail":
             sentence1 = "Hypothesis"
             sentence2 = "Premise"
@@ -302,36 +268,34 @@ class MyDataset(Dataset):
         else:
             raise ValueError(f"Invalid type: {self.dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
         
-        prompt = (f"Does the {sentence1} entail the {sentence2}?" 
-                  f"Answer exactly one word: {labels}. \n{sentence2}: {item[sentence2.lower()]} \n{sentence1}: {item[sentence1.lower()]} \nAnswer:")
+        prompt = (f"Does the {sentence1} entail the {sentence2}? "
+                  f"Answer exactly one word in lowercase: {labels}. \n{sentence2}: {item[sentence2.lower()]} \n{sentence1}: {item[sentence1.lower()]} \nAnswer:")
         
         # Tokenise prompt
         encoding = self.tokenizer(
             prompt,
             truncation=True,
             padding='max_length',
+            add_special_tokens=False,
             max_length=self.prompt_max_length,
             return_tensors="pt"
         ) 
 
         # Tokenise gold label for training
-        if self.training:
-            gold_label = self.tokenizer(
-            gold_label,
-            truncation=True,
-            padding="max_length",
-            max_length=self.label_max_length, # We found 6 to be the max_length of the labels
-            return_tensors="pt"
-            )
-
-            return {"input_ids": encoding["input_ids"].squeeze(),
-                "attention_mask": encoding["attention_mask"].squeeze(),
-                "labels": gold_label["input_ids"].squeeze()}
+        
+        gold_label_ids = self.tokenizer(
+        gold_label,
+        truncation=True,
+        padding="max_length",
+        max_length=self.label_max_length, # We found 6 to be the max_length of the labels
+        return_tensors="pt"
+        )
 
         return {"input_ids": encoding["input_ids"].squeeze(),
-                "attention_mask": encoding["attention_mask"].squeeze(),
-                "labels": gold_label,
-                "prompt": prompt}
+            "attention_mask": encoding["attention_mask"].squeeze(),
+            "labels_ids": gold_label_ids["input_ids"].squeeze(),
+            "labels": gold_label,
+            "prompt": prompt}
     
 
 def detect_env() -> str:
@@ -392,3 +356,71 @@ def create_checkpoint_path(model_id: str, name: str) -> str:
 
     print('Saving to:', checkpoint_path)
     return checkpoint_path
+
+
+def get_labels(dataset_type: str) -> List[str]:
+    """
+    Return a list of the class labels given a dataset_type.
+
+    Parameters
+    ----------
+    dataset_type: str
+        The type of the dataset. One of 'mnli', 'qnli', 'scitail'.
+
+    Returns
+    -------
+    labels: List[str]
+        The labels associated with the specified dataset.
+    """
+    if dataset_type == "mnli":
+        labels = ['contradiction', 'neutral', 'entailment']
+    elif dataset_type == "qnli":
+        labels = ['entailment', 'not entailment']
+    elif dataset_type == 'scitail':
+        labels = ['entails', 'neutral']
+    else:
+        raise ValueError(f"Invalid type: {dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
+    return labels
+
+
+def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: Any, tokenizer: Any, dataset_type: str) -> torch.Tensor:
+    """
+    Gets as input a batch and gives as output the probabilities of each label. The size of the output depends on the dataset_type specified.
+    """
+    labels = get_labels(dataset_type=dataset_type)
+    batch_size = batch_input_ids.size(0)
+
+    # Tokenize target labels
+    label_ids = [tokenizer.encode(label, add_special_tokens=False) for label in labels]
+    
+    probs = torch.zeros(batch_size, len(labels))
+    # Loop over each example
+    for i in range(batch_size):
+        input_ids = batch_input_ids[i].unsqueeze(0)
+        attention_mask = batch_attention_mask[i].unsqueeze(0)
+
+        # Loop over each label
+        for j, label_tokens in enumerate(label_ids):
+            p = 1.0
+            generated_ids = input_ids.clone()
+            generated_mask = attention_mask.clone()
+
+            # Loop over each token
+            for tid in label_tokens:
+                with torch.no_grad():
+                      outputs = model(input_ids=generated_ids, attention_mask=generated_mask)
+                      next_token_logits = outputs.logits[:, -1, :]
+                      next_token_probs = F.softmax(next_token_logits, dim=-1)
+
+                      # Get the probability
+                      p *= next_token_probs[0, tid].item()
+                
+                # Feed the chosen token as next input to get next token prob
+                generated_ids = torch.cat([generated_ids, torch.tensor([[tid]], device=input_ids.device)], dim=-1)
+                generated_mask = torch.cat([generated_mask, torch.ones(1, len(label_tokens), device=attention_mask.device)], dim=-1)
+                
+                
+                
+            # Update the probs tensor of ith example and jth label
+            probs[i,j] = p
+    return probs
