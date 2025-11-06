@@ -127,7 +127,7 @@ def test_run(model: Any, dataloader: Any, tokenizer: Any, dataset_type: str) -> 
                                   model=model,
                                   tokenizer=tokenizer)
     
-    batch_pred_indices = torch.argmax(batch_probs)
+    batch_pred_indices = torch.argmax(batch_probs, dim=1)
     batch_pred_labels = [labels[i] for i in batch_pred_indices]
     
     return batch_pred_labels, gold_labels_batch, batch_probs
@@ -401,26 +401,26 @@ def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: An
 
         # Loop over each label
         for j, label_tokens in enumerate(label_ids):
-            p = 1.0
+            log_p = torch.tensor(0.0, device=input_ids.device)
             generated_ids = input_ids.clone()
             generated_mask = attention_mask.clone()
 
             # Loop over each token
             for tid in label_tokens:
                 with torch.no_grad():
-                      outputs = model(input_ids=generated_ids, attention_mask=generated_mask)
-                      next_token_logits = outputs.logits[:, -1, :]
-                      next_token_probs = F.softmax(next_token_logits, dim=-1)
+                    outputs = model(input_ids=generated_ids, attention_mask=generated_mask)
+                    next_token_logits = outputs.logits[:, -1, :]
+                    next_token_probs = F.softmax(next_token_logits, dim=-1)
 
-                      # Get the probability
-                      p *= next_token_probs[0, tid].item()
-                
+                    # Get the probability
+                    log_p += torch.log(next_token_probs[0, tid] + 1e-12)
                 # Feed the chosen token as next input to get next token prob
                 generated_ids = torch.cat([generated_ids, torch.tensor([[tid]], device=input_ids.device)], dim=-1)
-                generated_mask = torch.cat([generated_mask, torch.ones(1, len(label_tokens), device=attention_mask.device)], dim=-1)
-                
-                
+                generated_mask = torch.cat([generated_mask, torch.ones(1, 1, device=attention_mask.device)], dim=-1)
                 
             # Update the probs tensor of ith example and jth label
-            probs[i,j] = p
+            probs[i,j] = torch.exp(log_p)
+
+        # Normalise
+        probs[i, :] /= probs[i, :].sum()
     return probs
