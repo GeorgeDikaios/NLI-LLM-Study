@@ -410,10 +410,10 @@ def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: An
                 with torch.no_grad():
                     outputs = model(input_ids=generated_ids, attention_mask=generated_mask)
                     next_token_logits = outputs.logits[:, -1, :]
-                    next_token_probs = F.softmax(next_token_logits, dim=-1)
+                    log_probs = F.log_softmax(next_token_logits, dim=-1)
 
                     # Get the probability
-                    log_p += torch.log(next_token_probs[0, tid] + 1e-12)
+                    log_p += log_probs[0, tid]
                 # Feed the chosen token as next input to get next token prob
                 generated_ids = torch.cat([generated_ids, torch.tensor([[tid]], device=input_ids.device)], dim=-1)
                 generated_mask = torch.cat([generated_mask, torch.ones(1, 1, device=attention_mask.device)], dim=-1)
