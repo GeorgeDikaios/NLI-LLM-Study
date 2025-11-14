@@ -1,12 +1,13 @@
 import matplotlib.pyplot as plt
 import torch
-import re
 import os
+import numpy
 import pandas
 from typing import Any, Tuple, List
 from huggingface_hub import login
 from torch.utils.data import Dataset
 import torch.nn.functional as F
+from captum.attr import visualization as viz
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, matthews_corrcoef, cohen_kappa_score, ConfusionMatrixDisplay
 
 def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type) -> Tuple[List[int], List[int]]:
@@ -424,3 +425,65 @@ def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: An
         # Normalise
         probs[i, :] /= probs[i, :].sum()
     return probs
+
+def predict_fn(texts, model, tokenizer, dataset_type):
+    # Ensure texts are Python strings
+    if isinstance(texts, numpy.ndarray):
+        texts = texts.tolist()
+
+    inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(model.device)
+    probs = get_model_probs(inputs['input_ids'], inputs['attention_mask'], model, tokenizer, dataset_type)
+    probs = F.normalize(probs, p=1, dim=1)
+
+    return probs.cpu().numpy()
+
+def forward_pass_fn(input_embeds, attention_mask, model, target_id):
+    # Wrapper function for IG
+    outputs = model(inputs_embeds=input_embeds, attention_mask=attention_mask)
+    return outputs.logits[:, target_id]
+
+def add_text_to_visualizer(attributions, pred_prob, pred_label, true_label, delta, tokens, data_records):
+    # Convert attributions to a list
+    attributions = attributions.sum(dim=2).squeeze(0)
+    attributions = attributions / torch.norm(attributions)
+    attributions = attributions.detach().cpu().numpy()
+
+    # Create a VisualizationDataRecord
+    data_records.append(viz.VisualizationDataRecord(
+        word_attributions=attributions,
+        pred_prob=pred_prob,
+        pred_class=pred_label,
+        true_class=true_label,
+        attr_class=pred_label,
+        convergence_score=delta,
+        attr_score=attributions.sum(),
+        raw_input_ids=tokens
+    ))
+
+def interpret_example(model, tokenizer, example, ig, data_records, class_names, target_id, pred_prob, dataset):
+    inputs = tokenizer(example, return_tensors="pt", padding=True, truncation=True).to(model.device)
+    input_ids = inputs['input_ids']
+    attention_mask = inputs['attention_mask']
+
+    # Get embeddings from the model's embedding layer using input_ids
+    input_embeddings = model.get_input_embeddings()(input_ids)
+
+
+
+    # Call IG on embeddings
+    attributions, delta = ig.attribute(
+        inputs=input_embeddings,
+        target=target_id,
+        additional_forward_args=(attention_mask,),
+        n_steps=500,
+        internal_batch_size=1,
+        return_convergence_delta=True
+    )
+
+    # Get true label, predicted label, probability and tokens as text
+    true_label = dataset[0]['labels']
+    pred_label = class_names[target_id]
+    tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
+
+    # Add example to be visualised
+    add_text_to_visualizer(attributions, pred_prob, pred_label, true_label, delta, tokens, data_records)
