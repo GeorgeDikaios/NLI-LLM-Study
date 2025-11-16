@@ -8,6 +8,7 @@ from huggingface_hub import login
 from torch.utils.data import Dataset
 import torch.nn.functional as F
 from captum.attr import visualization as viz
+from captum.attr import InterpretableEmbeddingBase
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, matthews_corrcoef, cohen_kappa_score, ConfusionMatrixDisplay
 
 def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type) -> Tuple[List[int], List[int]]:
@@ -283,7 +284,6 @@ class MyDataset(Dataset):
         ) 
 
         # Tokenise gold label for training
-        
         gold_label_ids = self.tokenizer(
         gold_label,
         truncation=True,
@@ -291,7 +291,7 @@ class MyDataset(Dataset):
         max_length=self.label_max_length, # We found 6 to be the max_length of the labels
         return_tensors="pt"
         )
-
+        
         return {"input_ids": encoding["input_ids"].squeeze(),
             "attention_mask": encoding["attention_mask"].squeeze(),
             "labels_ids": gold_label_ids["input_ids"].squeeze(),
@@ -437,16 +437,17 @@ def predict_fn(texts, model, tokenizer, dataset_type):
 
     return probs.cpu().numpy()
 
-def forward_pass_fn(input_embeds, attention_mask, model, target_id):
-    # Wrapper function for IG
+def forward_pass_fn(input_embeds, attention_mask, model, pred_label_id, tokenizer, class_names):
     outputs = model(inputs_embeds=input_embeds, attention_mask=attention_mask)
-    return outputs.logits[:, target_id]
+    last_token_logits = outputs.logits[:, -1, :]
+    pred_label_token_str = class_names[pred_label_id]
+    pred_token_id = tokenizer.convert_tokens_to_ids([pred_label_token_str])[0]
+    return last_token_logits[:, pred_token_id]
 
 def add_text_to_visualizer(attributions, pred_prob, pred_label, true_label, delta, tokens, data_records):
     # Convert attributions to a list
-    attributions = attributions.sum(dim=2).squeeze(0)
-    attributions = attributions / torch.norm(attributions)
-    attributions = attributions.detach().cpu().numpy()
+    attributions = attributions.sum(dim=2)[0].detach().cpu().numpy()
+    attributions = attributions / (numpy.max(numpy.abs(attributions)) + 1e-10)
 
     # Create a VisualizationDataRecord
     data_records.append(viz.VisualizationDataRecord(
@@ -460,29 +461,32 @@ def add_text_to_visualizer(attributions, pred_prob, pred_label, true_label, delt
         raw_input_ids=tokens
     ))
 
-def interpret_example(model, tokenizer, example, ig, data_records, class_names, target_id, pred_prob, dataset):
-    inputs = tokenizer(example, return_tensors="pt", padding=True, truncation=True).to(model.device)
-    input_ids = inputs['input_ids']
-    attention_mask = inputs['attention_mask']
+def interpret_example(model, tokenizer, example_id, ig, data_records, class_names, pred_label_id, pred_prob, dataset):
+    input_ids = dataset[example_id]['input_ids'].to(model.device)
+    attention_mask = dataset[example_id]['attention_mask'].to(model.device)
+
+    interpretable_embeddings = InterpretableEmbeddingBase(model.get_input_embeddings())
 
     # Get embeddings from the model's embedding layer using input_ids
-    input_embeddings = model.get_input_embeddings()(input_ids)
+    input_embeddings = interpretable_embeddings.indices_to_embeddings(input_ids)
 
-
-
+    # Define a baseline to compare
+    baseline_ids = torch.full_like(input_ids, tokenizer.pad_token_id).to(model.device)
+    baseline_embeddings = interpretable_embeddings.indices_to_embeddings(baseline_ids)
+    
     # Call IG on embeddings
     attributions, delta = ig.attribute(
         inputs=input_embeddings,
-        target=target_id,
+        baselines=baseline_embeddings,
         additional_forward_args=(attention_mask,),
-        n_steps=500,
+        n_steps=50,
         internal_batch_size=1,
         return_convergence_delta=True
     )
 
     # Get true label, predicted label, probability and tokens as text
-    true_label = dataset[0]['labels']
-    pred_label = class_names[target_id]
+    true_label = dataset[example_id]['labels']
+    pred_label = class_names[pred_label_id]
     tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
 
     # Add example to be visualised
