@@ -395,6 +395,7 @@ def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: An
     label_ids = [tokenizer.encode(label, add_special_tokens=False) for label in labels]
     
     probs = torch.zeros(batch_size, len(labels))
+
     # Loop over each example
     for i in range(batch_size):
         input_ids = batch_input_ids[i].unsqueeze(0)
@@ -415,6 +416,7 @@ def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: An
 
                     # Get the probability
                     log_p += log_probs[0, tid]
+
                 # Feed the chosen token as next input to get next token prob
                 generated_ids = torch.cat([generated_ids, torch.tensor([[tid]], device=input_ids.device)], dim=-1)
                 generated_mask = torch.cat([generated_mask, torch.ones(1, 1, device=attention_mask.device)], dim=-1)
@@ -427,7 +429,10 @@ def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: An
     return probs
 
 def predict_fn(texts, model, tokenizer, dataset_type):
-    # Ensure texts are Python strings
+    """
+    Predict using prompt
+    """
+    # Ensure texts are str
     if isinstance(texts, numpy.ndarray):
         texts = texts.tolist()
 
@@ -437,12 +442,31 @@ def predict_fn(texts, model, tokenizer, dataset_type):
 
     return probs.cpu().numpy()
 
+def predict_fn_pretokenized(input_ids, attention_mask, model, tokenizer, dataset_type):
+    """
+    Predict using pre-tokenized input_ids and attention_mask.
+    """
+    probs = get_model_probs(input_ids, attention_mask, model, tokenizer, dataset_type)
+    probs = F.normalize(probs, p=1, dim=1)
+
+    return probs.cpu().numpy()
+    
+
 def forward_pass_fn(input_embeds, attention_mask, model, pred_label_id, tokenizer, class_names):
-    outputs = model(inputs_embeds=input_embeds, attention_mask=attention_mask)
+    """
+    This function gives the logit of the next token only, which is an approximation for the whole sequence
+    """
+    # Get outputs using embeds
+    outputs = model(inputs_embeds=input_embeds.requires_grad_(), attention_mask=attention_mask)
+
+    # Get logits for the last token
     last_token_logits = outputs.logits[:, -1, :]
-    pred_label_token_str = class_names[pred_label_id]
-    pred_token_id = tokenizer.convert_tokens_to_ids([pred_label_token_str])[0]
-    return last_token_logits[:, pred_token_id]
+
+    # Get the predicted label and get the id
+    pred_label = class_names[pred_label_id]
+    pred_label_first_token_id = tokenizer.encode(pred_label, add_special_tokens=False)[0]
+
+    return last_token_logits[:, pred_label_first_token_id]
 
 def add_text_to_visualizer(attributions, pred_prob, pred_label, true_label, delta, tokens, data_records):
     # Convert attributions to a list
@@ -461,11 +485,11 @@ def add_text_to_visualizer(attributions, pred_prob, pred_label, true_label, delt
         raw_input_ids=tokens
     ))
 
-def interpret_example(model, tokenizer, example_id, ig, data_records, class_names, pred_label_id, pred_prob, dataset):
-    input_ids = dataset[example_id]['input_ids'].to(model.device)
-    attention_mask = dataset[example_id]['attention_mask'].to(model.device)
+def interpret_example_IG(model, tokenizer, example_id, ig, data_records, class_names, pred_label_id, pred_prob, dataset):
+    input_ids = dataset[example_id]['input_ids'].unsqueeze(0).to(model.device)
+    attention_mask = dataset[example_id]['attention_mask'].unsqueeze(0).to(model.device)
 
-    interpretable_embeddings = InterpretableEmbeddingBase(model.get_input_embeddings())
+    interpretable_embeddings = InterpretableEmbeddingBase(model.get_input_embeddings(), "embeds")
 
     # Get embeddings from the model's embedding layer using input_ids
     input_embeddings = interpretable_embeddings.indices_to_embeddings(input_ids)
