@@ -308,15 +308,15 @@ def detect_env() -> str:
     str
         one of 'colab', 'kaggle', 'local'
     """
+    
+    if 'KAGGLE_KERNEL_RUN_TYPE' in os.environ:
+        return 'kaggle'
+    
     try:
         import google.colab
         return 'colab'
     except ImportError:
         pass
-
-    if 'KAGGLE_KERNEL_RUN_TYPE' in os.environ:
-        return 'kaggle'
-    
     return 'local'
 
 
