@@ -226,7 +226,7 @@ def evaluate_metrics(gold_labels: list, predicted_labels: list, dataset_type: st
     kappa = cohen_kappa_score(y1=gold_labels, y2=predicted_labels)
     
     display_labels = get_labels(dataset_type=dataset_type)
-    
+    print(display_labels)
     cm = confusion_matrix(y_true=gold_labels, y_pred=predicted_labels, labels=display_labels)
     cm_display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=display_labels)
     cm_display.plot(cmap="Blues")
