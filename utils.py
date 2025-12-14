@@ -226,7 +226,7 @@ def evaluate_metrics(gold_labels: list, predicted_labels: list, dataset_type: st
     kappa = cohen_kappa_score(y1=gold_labels, y2=predicted_labels)
     
     display_labels = get_labels(dataset_type=dataset_type)
-    print(display_labels)
+    
     cm = confusion_matrix(y_true=gold_labels, y_pred=predicted_labels, labels=display_labels)
     cm_display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=display_labels)
     cm_display.plot(cmap="Blues")
@@ -394,16 +394,17 @@ def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: An
     # Tokenize target labels
     label_ids = [tokenizer.encode(label, add_special_tokens=False) for label in labels]
     
-    probs = torch.zeros(batch_size, len(labels))
+    probs = torch.zeros(batch_size, len(labels), dtype=torch.float32, device=batch_input_ids.device)
 
     # Loop over each example
     for i in range(batch_size):
         input_ids = batch_input_ids[i].unsqueeze(0)
         attention_mask = batch_attention_mask[i].unsqueeze(0)
-
+        log_p_list = []
+        
         # Loop over each label
-        for j, label_tokens in enumerate(label_ids):
-            log_p = torch.tensor(0.0, device=input_ids.device)
+        for label_tokens in label_ids:
+            log_p = torch.tensor(0.0, device=input_ids.device, dtype=torch.float32)
             generated_ids = input_ids.clone()
             generated_mask = attention_mask.clone()
 
@@ -412,7 +413,7 @@ def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: An
                 with torch.no_grad():
                     outputs = model(input_ids=generated_ids, attention_mask=generated_mask)
                     next_token_logits = outputs.logits[:, -1, :]
-                    log_probs = F.log_softmax(next_token_logits, dim=-1)
+                    log_probs = F.log_softmax(next_token_logits.float(), dim=-1)
 
                     # Get the probability
                     log_p += log_probs[0, tid]
@@ -422,10 +423,12 @@ def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: An
                 generated_mask = torch.cat([generated_mask, torch.ones(1, 1, device=attention_mask.device)], dim=-1)
                 
             # Update the probs tensor of ith example and jth label
-            probs[i,j] = torch.exp(log_p)
+            log_p_list.append(log_p)
 
         # Normalise
-        probs[i, :] /= probs[i, :].sum()
+        log_p_tensor = torch.stack(log_p_list).float()
+        log_p_tensor -= torch.logsumexp(log_p_tensor, dim=0)
+        probs[i, :] = torch.exp(log_p_tensor)
     return probs
 
 def predict_fn(texts, model, tokenizer, dataset_type):
