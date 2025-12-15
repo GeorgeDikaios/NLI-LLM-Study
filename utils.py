@@ -202,7 +202,7 @@ def hf_login(token_name: str = "HF_TOKEN") -> None:
     login(token=token)
     
 
-def evaluate_metrics(gold_labels: list, predicted_labels: list, dataset_type: str) -> None:
+def evaluate_metrics(gold_labels: list, predicted_labels: list, params: dict) -> None:
     """
     Evaluates and displays the following metrics: Accuracy, F1-Score, Matthew;s Correlation Coefficient, Cohen's Kappa.
     Also plots the confusion matrix.
@@ -213,8 +213,8 @@ def evaluate_metrics(gold_labels: list, predicted_labels: list, dataset_type: st
         A list of the gold labels
     predicted_labels: list
         A list with the labels that were predicted
-    dataset_type: str
-        The type of the dataset. One of 'qnli', 'mnli' and 'scitail'.
+    params: dict
+        A dictionary containing information regarding 'dataset_type', 'model_id', 'quantization' and 'training_mode'
 
     Returns
     -------
@@ -225,15 +225,17 @@ def evaluate_metrics(gold_labels: list, predicted_labels: list, dataset_type: st
     mcc = matthews_corrcoef(y_true=gold_labels, y_pred=predicted_labels)
     kappa = cohen_kappa_score(y1=gold_labels, y2=predicted_labels)
     
-    display_labels = get_labels(dataset_type=dataset_type)
+    display_labels = get_labels(dataset_type=params['dataset_type'])
     
-    cm = confusion_matrix(y_true=gold_labels, y_pred=predicted_labels, labels=display_labels)
-    cm_display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=display_labels)
-    cm_display.plot(cmap="Blues")
     print(f"Accuracy: {acc:.4f}.\n",
           f"F1 Score: {f1:.4f}.\n",
           f"Matthew's Correlation Coefficient: {mcc:.4f}.\n",
           f"Cohen's Kappa Score: {kappa:.4f}.")
+    
+    cm = confusion_matrix(y_true=gold_labels, y_pred=predicted_labels, labels=display_labels)
+    cm_display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=display_labels)
+    cm_display.plot(cmap="Blues")
+    plt.title(f"model: {params['model_id']} \n quantized: {params['quantization']} \n training mode: {params['training_mode']}")
 
 
 class MyDataset(Dataset):
@@ -320,7 +322,7 @@ def detect_env() -> str:
     return 'local'
 
 
-def create_checkpoint_path(model_id: str, name: str) -> str:
+def create_checkpoint_path(params: dict) -> str:
     """
     Creates a path string to a checkpoint file.
 
@@ -342,7 +344,12 @@ def create_checkpoint_path(model_id: str, name: str) -> str:
     """
 
     env = detect_env()
-    filename = f"checkpoint_{name}_{model_id.split('/')[1]}.pt".replace('-', '_')
+    model_id = params['model_id']
+    dataset_type = params['dataset_type']
+    quantization = params['quantization']
+    training_mode = params['training_mode'].replace(' ', '_')
+
+    filename = f"checkpoint_{dataset_type}_{model_id.split('/')[1]}_{quantization}_{training_mode}.pt".replace('-', '_')
 
     if env == 'colab':
         checkpoint_dir = "/content/drive/MyDrive/eval_checkpoints"
@@ -431,90 +438,90 @@ def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: An
         probs[i, :] = torch.exp(log_p_tensor)
     return probs
 
-def predict_fn(texts, model, tokenizer, dataset_type):
-    """
-    Predict using prompt
-    """
-    # Ensure texts are str
-    if isinstance(texts, numpy.ndarray):
-        texts = texts.tolist()
+# def predict_fn(texts, model, tokenizer, dataset_type):
+#     """
+#     Predict using prompt
+#     """
+#     # Ensure texts are str
+#     if isinstance(texts, numpy.ndarray):
+#         texts = texts.tolist()
 
-    inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(model.device)
-    probs = get_model_probs(inputs['input_ids'], inputs['attention_mask'], model, tokenizer, dataset_type)
-    probs = F.normalize(probs, p=1, dim=1)
+#     inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(model.device)
+#     probs = get_model_probs(inputs['input_ids'], inputs['attention_mask'], model, tokenizer, dataset_type)
+#     probs = F.normalize(probs, p=1, dim=1)
 
-    return probs.cpu().numpy()
+#     return probs.cpu().numpy()
 
-def predict_fn_pretokenized(input_ids, attention_mask, model, tokenizer, dataset_type):
-    """
-    Predict using pre-tokenized input_ids and attention_mask.
-    """
-    probs = get_model_probs(input_ids, attention_mask, model, tokenizer, dataset_type)
-    probs = F.normalize(probs, p=1, dim=1)
+# def predict_fn_pretokenized(input_ids, attention_mask, model, tokenizer, dataset_type):
+#     """
+#     Predict using pre-tokenized input_ids and attention_mask.
+#     """
+#     probs = get_model_probs(input_ids, attention_mask, model, tokenizer, dataset_type)
+#     probs = F.normalize(probs, p=1, dim=1)
 
-    return probs.cpu().numpy()
+#     return probs.cpu().numpy()
     
 
-def forward_pass_fn(input_embeds, attention_mask, model, pred_label_id, tokenizer, class_names):
-    """
-    This function gives the logit of the next token only, which is an approximation for the whole sequence
-    """
-    # Get outputs using embeds
-    outputs = model(inputs_embeds=input_embeds.requires_grad_(), attention_mask=attention_mask)
+# def forward_pass_fn(input_embeds, attention_mask, model, pred_label_id, tokenizer, class_names):
+#     """
+#     This function gives the logit of the next token only, which is an approximation for the whole sequence
+#     """
+#     # Get outputs using embeds
+#     outputs = model(inputs_embeds=input_embeds.requires_grad_(), attention_mask=attention_mask)
 
-    # Get logits for the last token
-    last_token_logits = outputs.logits[:, -1, :]
+#     # Get logits for the last token
+#     last_token_logits = outputs.logits[:, -1, :]
 
-    # Get the predicted label and get the id
-    pred_label = class_names[pred_label_id]
-    pred_label_first_token_id = tokenizer.encode(pred_label, add_special_tokens=False)[0]
+#     # Get the predicted label and get the id
+#     pred_label = class_names[pred_label_id]
+#     pred_label_first_token_id = tokenizer.encode(pred_label, add_special_tokens=False)[0]
 
-    return last_token_logits[:, pred_label_first_token_id]
+#     return last_token_logits[:, pred_label_first_token_id]
 
-def add_text_to_visualizer(attributions, pred_prob, pred_label, true_label, delta, tokens, data_records):
-    # Convert attributions to a list
-    attributions = attributions.sum(dim=2)[0].detach().cpu().numpy()
-    attributions = attributions / (numpy.max(numpy.abs(attributions)) + 1e-10)
+# def add_text_to_visualizer(attributions, pred_prob, pred_label, true_label, delta, tokens, data_records):
+#     # Convert attributions to a list
+#     attributions = attributions.sum(dim=2)[0].detach().cpu().numpy()
+#     attributions = attributions / (numpy.max(numpy.abs(attributions)) + 1e-10)
 
-    # Create a VisualizationDataRecord
-    data_records.append(viz.VisualizationDataRecord(
-        word_attributions=attributions,
-        pred_prob=pred_prob,
-        pred_class=pred_label,
-        true_class=true_label,
-        attr_class=pred_label,
-        convergence_score=delta,
-        attr_score=attributions.sum(),
-        raw_input_ids=tokens
-    ))
+#     # Create a VisualizationDataRecord
+#     data_records.append(viz.VisualizationDataRecord(
+#         word_attributions=attributions,
+#         pred_prob=pred_prob,
+#         pred_class=pred_label,
+#         true_class=true_label,
+#         attr_class=pred_label,
+#         convergence_score=delta,
+#         attr_score=attributions.sum(),
+#         raw_input_ids=tokens
+#     ))
 
-def interpret_example_IG(model, tokenizer, example_id, ig, data_records, class_names, pred_label_id, pred_prob, dataset):
-    input_ids = dataset[example_id]['input_ids'].unsqueeze(0).to(model.device)
-    attention_mask = dataset[example_id]['attention_mask'].unsqueeze(0).to(model.device)
+# def interpret_example_IG(model, tokenizer, example_id, ig, data_records, class_names, pred_label_id, pred_prob, dataset):
+#     input_ids = dataset[example_id]['input_ids'].unsqueeze(0).to(model.device)
+#     attention_mask = dataset[example_id]['attention_mask'].unsqueeze(0).to(model.device)
 
-    interpretable_embeddings = InterpretableEmbeddingBase(model.get_input_embeddings(), "embeds")
+#     interpretable_embeddings = InterpretableEmbeddingBase(model.get_input_embeddings(), "embeds")
 
-    # Get embeddings from the model's embedding layer using input_ids
-    input_embeddings = interpretable_embeddings.indices_to_embeddings(input_ids)
+#     # Get embeddings from the model's embedding layer using input_ids
+#     input_embeddings = interpretable_embeddings.indices_to_embeddings(input_ids)
 
-    # Define a baseline to compare
-    baseline_ids = torch.full_like(input_ids, tokenizer.pad_token_id).to(model.device)
-    baseline_embeddings = interpretable_embeddings.indices_to_embeddings(baseline_ids)
+#     # Define a baseline to compare
+#     baseline_ids = torch.full_like(input_ids, tokenizer.pad_token_id).to(model.device)
+#     baseline_embeddings = interpretable_embeddings.indices_to_embeddings(baseline_ids)
     
-    # Call IG on embeddings
-    attributions, delta = ig.attribute(
-        inputs=input_embeddings,
-        baselines=baseline_embeddings,
-        additional_forward_args=(attention_mask,),
-        n_steps=50,
-        internal_batch_size=1,
-        return_convergence_delta=True
-    )
+#     # Call IG on embeddings
+#     attributions, delta = ig.attribute(
+#         inputs=input_embeddings,
+#         baselines=baseline_embeddings,
+#         additional_forward_args=(attention_mask,),
+#         n_steps=50,
+#         internal_batch_size=1,
+#         return_convergence_delta=True
+#     )
 
-    # Get true label, predicted label, probability and tokens as text
-    true_label = dataset[example_id]['labels']
-    pred_label = class_names[pred_label_id]
-    tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
+#     # Get true label, predicted label, probability and tokens as text
+#     true_label = dataset[example_id]['labels']
+#     pred_label = class_names[pred_label_id]
+#     tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
 
-    # Add example to be visualised
-    add_text_to_visualizer(attributions, pred_prob, pred_label, true_label, delta, tokens, data_records)
+#     # Add example to be visualised
+#     add_text_to_visualizer(attributions, pred_prob, pred_label, true_label, delta, tokens, data_records)
