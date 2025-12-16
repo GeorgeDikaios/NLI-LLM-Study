@@ -44,7 +44,7 @@ def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type) -> Tuple[Lis
     elif dataset_type == "qnli":
         sentence1 = "Sentence"
         sentence2 = "Question"
-        labels = "'not_entailment' or 'entailment'"
+        labels = "'not entailment' or 'entailment'"
     elif dataset_type == "scitail":
         sentence1 = "Hypothesis"
         sentence2 = "Premise"
@@ -58,11 +58,11 @@ def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type) -> Tuple[Lis
             Answer exactly one word: {labels}. \n{sentence2}: {row[sentence2.lower()]} \n{sentence1}: {row[sentence1.lower()]} \nAnswer:"
         
         # Tokenize the prompt
-        prompt_token = tokenizer(prompt)
+        prompt_token = tokenizer(prompt, add_special_tokens=False)
         prompt_token_lengths.append(len(prompt_token["input_ids"]))
 
         # Tokenize label
-        label_token = tokenizer(row["label"])
+        label_token = tokenizer(row["label"], add_special_tokens=False)
         label_token_lengths.append(len(label_token["input_ids"]))
     return prompt_token_lengths, label_token_lengths
 
@@ -290,7 +290,8 @@ class MyDataset(Dataset):
         gold_label,
         truncation=True,
         padding="max_length",
-        max_length=self.label_max_length, # We found 6 to be the max_length of the labels
+        max_length=self.label_max_length,
+        add_special_tokens=False,
         return_tensors="pt"
         )
         
