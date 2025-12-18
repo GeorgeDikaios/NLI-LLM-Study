@@ -7,8 +7,8 @@ from typing import Any, Tuple, List
 from huggingface_hub import login
 from torch.utils.data import Dataset
 import torch.nn.functional as F
-from captum.attr import visualization as viz
-from captum.attr import InterpretableEmbeddingBase
+# from captum.attr import visualization as viz
+# from captum.attr import InterpretableEmbeddingBase
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, matthews_corrcoef, cohen_kappa_score, ConfusionMatrixDisplay
 
 def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type) -> Tuple[List[int], List[int]]:
@@ -402,41 +402,34 @@ def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: An
     # Tokenize target labels
     label_ids = [tokenizer.encode(label, add_special_tokens=False) for label in labels]
     
-    probs = torch.zeros(batch_size, len(labels), dtype=torch.float32, device=batch_input_ids.device)
+    log_p_list = []
+    # Loop over each label
+    for label_tokens in label_ids:
+        log_p = torch.zeros(batch_size, device=batch_input_ids.device, dtype=torch.float32)
+        batch_generated_ids = batch_input_ids.clone()
+        batch_generated_mask = batch_attention_mask.clone()
 
-    # Loop over each example
-    for i in range(batch_size):
-        input_ids = batch_input_ids[i].unsqueeze(0)
-        attention_mask = batch_attention_mask[i].unsqueeze(0)
-        log_p_list = []
-        
-        # Loop over each label
-        for label_tokens in label_ids:
-            log_p = torch.tensor(0.0, device=input_ids.device, dtype=torch.float32)
-            generated_ids = input_ids.clone()
-            generated_mask = attention_mask.clone()
+        # Loop over each token
+        for tid in label_tokens:
+            with torch.no_grad():
+                outputs = model(input_ids=batch_generated_ids, attention_mask=batch_generated_mask)
+                next_token_logits = outputs.logits[:, -1, :]
+                log_probs = F.log_softmax(next_token_logits.float(), dim=-1)
 
-            # Loop over each token
-            for tid in label_tokens:
-                with torch.no_grad():
-                    outputs = model(input_ids=generated_ids, attention_mask=generated_mask)
-                    next_token_logits = outputs.logits[:, -1, :]
-                    log_probs = F.log_softmax(next_token_logits.float(), dim=-1)
+                # Get the probability
+                log_p += log_probs[:, tid]
 
-                    # Get the probability
-                    log_p += log_probs[0, tid]
+            # Feed the chosen token as next input to get next token prob to the whole batch
+            tid_batch = torch.full((batch_size, 1), tid, device=batch_input_ids.device, dtype=batch_input_ids.dtype)
+            batch_generated_ids = torch.cat([batch_generated_ids, tid_batch], dim=-1)
+            batch_generated_mask = torch.cat([batch_generated_mask, torch.ones(batch_size, 1, device=batch_attention_mask.device)], dim=-1)
+            
+        log_p_list.append(log_p)
 
-                # Feed the chosen token as next input to get next token prob
-                generated_ids = torch.cat([generated_ids, torch.tensor([[tid]], device=input_ids.device)], dim=-1)
-                generated_mask = torch.cat([generated_mask, torch.ones(1, 1, device=attention_mask.device)], dim=-1)
-                
-            # Update the probs tensor of ith example and jth label
-            log_p_list.append(log_p)
-
-        # Normalise
-        log_p_tensor = torch.stack(log_p_list).float()
-        log_p_tensor -= torch.logsumexp(log_p_tensor, dim=0)
-        probs[i, :] = torch.exp(log_p_tensor)
+    # Normalise
+    log_p_tensor = torch.stack(log_p_list).float()
+    log_p_tensor -= torch.logsumexp(log_p_tensor, dim=0, keepdim=True)
+    probs = torch.exp(log_p_tensor.T)
     return probs
 
 # def predict_fn(texts, model, tokenizer, dataset_type):
