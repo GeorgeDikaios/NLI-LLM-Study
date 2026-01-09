@@ -33,7 +33,7 @@ def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type) -> Tuple[Lis
         - prompt_token_lengths (List[int]): Lengths of prompts
         - label_token_lengths (List[int]): Lengths of labels
     """
-
+    dataset_type = dataset_type.split('_')[0]
     prompt_token_lengths = []
     label_token_lengths = []
 
@@ -116,6 +116,7 @@ def test_run(model: Any, dataloader: Any, tokenizer: Any, dataset_type: str) -> 
             - predictions: A list of strings containing the predictions of the model.
             - gold_labels: A list of strings containing the equivalent gold labels.
     """
+    dataset_type=dataset_type.split('_')[0]
     labels = get_labels(dataset_type=dataset_type)
     batch = next(iter(dataloader))
 
@@ -125,7 +126,7 @@ def test_run(model: Any, dataloader: Any, tokenizer: Any, dataset_type: str) -> 
 
     batch_probs = get_model_probs(batch_input_ids=input_ids_batch,
                                   batch_attention_mask=attention_mask_batch,
-                                  dataset_type='scitail',
+                                  dataset_type=dataset_type,
                                   model=model,
                                   tokenizer=tokenizer)
     
@@ -225,7 +226,7 @@ def evaluate_metrics(gold_labels: list, predicted_labels: list, params: dict) ->
     mcc = matthews_corrcoef(y_true=gold_labels, y_pred=predicted_labels)
     kappa = cohen_kappa_score(y1=gold_labels, y2=predicted_labels)
     
-    display_labels = get_labels(dataset_type=params['dataset_type'])
+    display_labels = get_labels(dataset_type=params['dataset_type'].split('_')[0])
     
     print(f"Accuracy: {acc:.4f}.\n",
           f"F1 Score: {f1:.4f}.\n",
@@ -243,7 +244,7 @@ class MyDataset(Dataset):
     def __init__(self, dataframe, tokenizer, dataset_type, prompt_max_length, label_max_length, training=False):
         self.dataframe = dataframe
         self.tokenizer = tokenizer
-        self.dataset_type = dataset_type
+        self.dataset_type = dataset_type.split('_')[0]
         self.prompt_max_length = prompt_max_length
         self.label_max_length = label_max_length
         self.training = training
@@ -381,6 +382,7 @@ def get_labels(dataset_type: str) -> List[str]:
     labels: List[str]
         The labels associated with the specified dataset.
     """
+    dataset_type=dataset_type.split('_')[0]
     if dataset_type == "mnli":
         labels = ['contradiction', 'neutral', 'entailment']
     elif dataset_type == "qnli":
@@ -396,6 +398,7 @@ def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: An
     """
     Gets as input a batch and gives as output the probabilities of each label. The size of the output depends on the dataset_type specified.
     """
+    dataset_type=dataset_type.split('_')[0]
     labels = get_labels(dataset_type=dataset_type)
     batch_size = batch_input_ids.size(0)
 

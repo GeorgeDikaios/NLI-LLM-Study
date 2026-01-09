@@ -6,3 +6,5 @@ notes.ipynb
 __pycache__/
 requirements.txt
 explainability.ipynb
+Datasets
+settings.json
