@@ -11,7 +11,7 @@ import torch.nn.functional as F
 # from captum.attr import InterpretableEmbeddingBase
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, matthews_corrcoef, cohen_kappa_score, ConfusionMatrixDisplay
 
-def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type) -> Tuple[List[int], List[int]]:
+def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type: str, examples: str = None) -> Tuple[List[int], List[int]]:
     """ 
     Tokenizes the prompt and label, and returns two lists containing the lengths of each tokenized sequence.
 
@@ -54,8 +54,14 @@ def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type) -> Tuple[Lis
     
     for _, row in df.iterrows():
         # Create the prompt
-        prompt = f"Does the {sentence1} entail the {sentence2}? \
-            Answer exactly one word: {labels}. \n{sentence2}: {row[sentence2.lower()]} \n{sentence1}: {row[sentence1.lower()]} \nAnswer:"
+        if examples:
+            prompt = (f"Examples:\n{examples} \nGiven the above examples as reference does the {sentence1} entail the {sentence2} in the following case? "
+                  f"Answer exactly one word in lowercase as in the examples: {labels}. \n{sentence2}: {row[sentence2.lower()]} \n{sentence1}: {row[sentence1.lower()]} \nAnswer:")
+        else:
+            prompt = f"Does the {sentence1} entail the {sentence2}? \
+                Answer exactly one word: {labels}. \n{sentence2}: {row[sentence2.lower()]} \n{sentence1}: {row[sentence1.lower()]} \nAnswer:"
+        
+
         
         # Tokenize the prompt
         prompt_token = tokenizer(prompt, add_special_tokens=False)
@@ -67,7 +73,7 @@ def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type) -> Tuple[Lis
     return prompt_token_lengths, label_token_lengths
 
 
-def find_max_length(df, tokenizer, dataset_type) -> None:
+def find_max_length(df, tokenizer, dataset_type, examples=None) -> None:
     """
     Plots a histogram of the prompt lengths and prints the max size.
 
@@ -86,7 +92,7 @@ def find_max_length(df, tokenizer, dataset_type) -> None:
     Returns
     -------
     """
-    prompt_lengths, label_lengths = get_lengths(df, tokenizer, dataset_type)
+    prompt_lengths, label_lengths = get_lengths(df, tokenizer, dataset_type, examples)
     plt.hist(prompt_lengths, bins=50)
     plt.show()
         
@@ -259,22 +265,22 @@ class MyDataset(Dataset):
 
         # Format the prompt depending on dataset_type
         if self.dataset_type == "mnli":
-            sentence1 = "Hypothesis"
-            sentence2 = "Premise"
+            sentence1 = "premise"
+            sentence2 = "hypothesis"
             labels = "'contradiction', 'neutral' or 'entailment'"
         elif self.dataset_type == "qnli":
             sentence1 = "Sentence"
             sentence2 = "Question"
             labels = "'not entailment' or 'entailment'"
         elif self.dataset_type == "scitail":
-            sentence1 = "Hypothesis"
-            sentence2 = "Premise"
+            sentence1 = "premise"
+            sentence2 = "hypothesis"
             labels = "'neutral' or 'entails'"
         else:
             raise ValueError(f"Invalid type: {self.dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
         
         prompt = (f"Does the {sentence1} entail the {sentence2}? "
-                  f"Answer exactly one word in lowercase: {labels}. \n{sentence2}: {item[sentence2.lower()]} \n{sentence1}: {item[sentence1.lower()]} \nAnswer:")
+                  f"Answer exactly one word in lowercase: {labels}. \n{sentence1}: {item[sentence1.lower()]} \n{sentence2}: {item[sentence2.lower()]} \nAnswer:")
         
         # Tokenise prompt
         encoding = self.tokenizer(
@@ -435,6 +441,153 @@ def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: An
     probs = torch.exp(log_p_tensor.T)
     return probs
 
+
+class MyDataset_few_shot(Dataset):
+
+    def __init__(self, dataframe, examples, tokenizer, dataset_type, prompt_max_length, label_max_length, training=False):
+        self.dataframe = dataframe
+        self.examples = examples
+        self.tokenizer = tokenizer
+        self.dataset_type = dataset_type.split('_')[0]
+        self.prompt_max_length = prompt_max_length
+        self.label_max_length = label_max_length
+        self.training = training
+        
+
+    def __len__(self):
+        return len(self.dataframe)
+
+    def __getitem__(self, idx):
+        item = self.dataframe.iloc[idx]
+        gold_label = item['label']
+
+        # Format the prompt depending on dataset_type
+        if self.dataset_type == "mnli":
+            sentence1 = "premise"
+            sentence2 = "hypothesis"
+            labels = "'contradiction', 'neutral' or 'entailment'"
+        elif self.dataset_type == "qnli":
+            sentence1 = "sentence"
+            sentence2 = "question"
+            labels = "'not entailment' or 'entailment'"
+        elif self.dataset_type == "scitail":
+            sentence1 = "premise"
+            sentence2 = "hypothesis"
+            labels = "'neutral' or 'entails'"
+        else:
+            raise ValueError(f"Invalid type: {self.dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
+        
+        prompt = (f"Examples:\n{self.examples} \nGiven the above examples as reference does the {sentence1} entail the {sentence2} in the following case? "
+                  f"Answer exactly one word in lowercase as in the examples: {labels}. \n{sentence1}: {item[sentence1.lower()]} \n{sentence2}: {item[sentence2.lower()]} \nAnswer:")
+        
+        # Tokenise prompt
+        encoding = self.tokenizer(
+            prompt,
+            truncation=True,
+            padding='max_length',
+            add_special_tokens=False,
+            max_length=self.prompt_max_length,
+            return_tensors="pt"
+        ) 
+
+        # Tokenise gold label for training
+        gold_label_ids = self.tokenizer(
+        gold_label,
+        truncation=True,
+        padding="max_length",
+        max_length=self.label_max_length,
+        add_special_tokens=False,
+        return_tensors="pt"
+        )
+        
+        return {"input_ids": encoding["input_ids"].squeeze(),
+            "attention_mask": encoding["attention_mask"].squeeze(),
+            "labels_ids": gold_label_ids["input_ids"].squeeze(),
+            "labels": gold_label,
+            "prompt": prompt}
+    
+
+class MyDataset_MP(Dataset):
+
+    def __init__(self, dataframe, tokenizer, dataset_type, prompt_max_length, label_max_length, training=False):
+        self.dataframe = dataframe
+        self.tokenizer = tokenizer
+        self.dataset_type = dataset_type.split('_')[0]
+        self.prompt_max_length = prompt_max_length
+        self.label_max_length = label_max_length
+        self.training = training
+        
+
+    def __len__(self):
+        return len(self.dataframe)
+
+    def __getitem__(self, idx):
+        item = self.dataframe.iloc[idx]
+        gold_label = item['label']
+
+        # Format the prompt depending on dataset_type
+        if self.dataset_type == "mnli":
+            sentence1 = "premise"
+            sentence2 = "hypothesis"
+            labels = "'contradiction', 'neutral' or 'entailment'"
+        elif self.dataset_type == "qnli":
+            sentence1 = "Sentence"
+            sentence2 = "Question"
+            labels = "'not entailment' or 'entailment'"
+        elif self.dataset_type == "scitail":
+            sentence1 = "premise"
+            sentence2 = "hypothesis"
+            labels = "'neutral' or 'entails'"
+        else:
+            raise ValueError(f"Invalid type: {self.dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
+        
+        prompt = (f'For the premise: '
+
+                f'{item[sentence1.lower()]}\nand hypothesis: {item[sentence2.lower()]}, determine if the premise entails the hypothesis.\n'
+
+                f'If the premise supports the hypothesis, the status is "entails".\n'
+                f'If it does not, the status is neutral.\n'
+
+                f'As you perform this task, follow these steps:\n'
+
+                f'1. Clarify your understanding of the hypothesis and the premise.\n'
+
+                f'2. Make a preliminary identification of whether the premise contains the answer to the question.\n'
+
+                f'3. Critically assess your preliminary analysis. If you feel unsure about your initial classification as entails, try to reassess it.\n'
+
+                f'4. Confirm your final answer and explain the reasoning behind your choice.\n'
+
+                f'5. Evaluate your confidence (0-100%) in your analysis and provide an explanation for this confidence level.\n'
+
+                f'Provide the answer in your final response as entails or neutral.')
+        
+        # Tokenise prompt
+        encoding = self.tokenizer(
+            prompt,
+            truncation=True,
+            padding='max_length',
+            add_special_tokens=False,
+            max_length=self.prompt_max_length,
+            return_tensors="pt"
+        ) 
+
+        # Tokenise gold label for training
+        gold_label_ids = self.tokenizer(
+        gold_label,
+        truncation=True,
+        padding="max_length",
+        max_length=self.label_max_length,
+        add_special_tokens=False,
+        return_tensors="pt"
+        )
+        
+        return {"input_ids": encoding["input_ids"].squeeze(),
+            "attention_mask": encoding["attention_mask"].squeeze(),
+            "labels_ids": gold_label_ids["input_ids"].squeeze(),
+            "labels": gold_label,
+            "prompt": prompt}
+    
 # def predict_fn(texts, model, tokenizer, dataset_type):
 #     """
 #     Predict using prompt
