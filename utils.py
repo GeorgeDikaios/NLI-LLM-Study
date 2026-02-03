@@ -9,7 +9,7 @@ from torch.utils.data import Dataset
 import torch.nn.functional as F
 # from captum.attr import visualization as viz
 # from captum.attr import InterpretableEmbeddingBase
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, matthews_corrcoef, cohen_kappa_score, ConfusionMatrixDisplay
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, matthews_corrcoef, cohen_kappa_score, ConfusionMatrixDisplay, recall_score, precision_score
 
 def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type: str, examples: str = None) -> Tuple[List[int], List[int]]:
     """ 
@@ -228,6 +228,8 @@ def evaluate_metrics(gold_labels: list, predicted_labels: list, params: dict) ->
     None
     """
     acc = accuracy_score(y_true=gold_labels, y_pred=predicted_labels)
+    precision = precision_score(y_true=gold_labels, y_pred=predicted_labels, average='macro')
+    recall = recall_score(y_true=gold_labels, y_pred=predicted_labels, average='macro')
     f1 = f1_score(y_true=gold_labels, y_pred=predicted_labels, average='macro')
     mcc = matthews_corrcoef(y_true=gold_labels, y_pred=predicted_labels)
     kappa = cohen_kappa_score(y1=gold_labels, y2=predicted_labels)
@@ -235,6 +237,8 @@ def evaluate_metrics(gold_labels: list, predicted_labels: list, params: dict) ->
     display_labels = get_labels(dataset_type=params['dataset_type'].split('_')[0])
     
     print(f"Accuracy: {acc:.4f}.\n",
+          f"Precision: {precision:.4f}.\n"
+          f"Recall: {recall:.4f}.\n"
           f"F1 Score: {f1:.4f}.\n",
           f"Matthew's Correlation Coefficient: {mcc:.4f}.\n",
           f"Cohen's Kappa Score: {kappa:.4f}.")
@@ -243,6 +247,45 @@ def evaluate_metrics(gold_labels: list, predicted_labels: list, params: dict) ->
     cm_display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=display_labels)
     cm_display.plot(cmap="Blues")
     plt.title(f"model: {params['model_id']} \n quantized: {params['quantization']} \n training mode: {params['training_mode']}")
+
+def get_metrics(gold_labels: list, predicted_labels: list, params: dict, ax) -> None:
+    """
+    Evaluates and displays the following metrics: Accuracy, F1-Score, Matthew;s Correlation Coefficient, Cohen's Kappa.
+    Also plots the confusion matrix.
+
+    Parameters
+    ----------
+    gold_labels: list
+        A list of the gold labels
+    predicted_labels: list
+        A list with the labels that were predicted
+    params: dict
+        A dictionary containing information regarding 'dataset_type', 'model_id', 'quantization' and 'training_mode'
+
+    Returns
+    -------
+    None
+    """
+    acc = accuracy_score(y_true=gold_labels, y_pred=predicted_labels)
+    precision = precision_score(y_true=gold_labels, y_pred=predicted_labels, average='macro')
+    recall = recall_score(y_true=gold_labels, y_pred=predicted_labels, average='macro')
+    f1 = f1_score(y_true=gold_labels, y_pred=predicted_labels, average='macro')
+    mcc = matthews_corrcoef(y_true=gold_labels, y_pred=predicted_labels)
+    kappa = cohen_kappa_score(y1=gold_labels, y2=predicted_labels)
+    
+    display_labels = get_labels(dataset_type=params['dataset_type'].split('_')[0])
+
+    cm = confusion_matrix(
+        y_true=gold_labels,
+        y_pred=predicted_labels,
+        labels=display_labels
+    )
+
+    cm_display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=display_labels)
+    cm_display.plot(ax=ax, cmap="Blues", colorbar=False)
+    ax.set_title(f"{params['training_mode']}", fontsize=10)
+
+    return acc, precision, recall, f1, mcc, kappa
 
 
 class MyDataset(Dataset):
@@ -531,6 +574,88 @@ class MyDataset_MP(Dataset):
             sentence2 = "hypothesis"
             labels = "'contradiction', 'neutral' or 'entailment'"
         elif self.dataset_type == "qnli":
+            sentence1 = "sentence"
+            sentence2 = "question"
+            labels = "'not entailment' or 'entailment'"
+        elif self.dataset_type == "scitail":
+            sentence1 = "premise"
+            sentence2 = "hypothesis"
+            labels = "'neutral' or 'entails'"
+        else:
+            raise ValueError(f"Invalid type: {self.dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
+        
+        prompt = (f'For the question: '
+
+                f'{item[sentence2.lower()]}\nand statement: {item[sentence1.lower()]}, determine if the statement provides the answer to the question.\n'
+
+                f'If the statement contains the answer to the question, the status is entailment.\n'
+                f'If it does not, the status is not_entailment.\n'
+
+                f'As you perform this task, follow these steps:\n'
+
+                f'1. Clarify your understanding of the question and the context sentence.\n'
+
+                f'2. Make a preliminary identification of whether the context sentence contains the answer to the question.\n'
+
+                f'3. Critically assess your preliminary analysis. If you feel unsure about your initial entailment classification, try to reassess it.\n'
+
+                f'4. Confirm your final answer and explain the reasoning behind your choice.\n'
+
+                f'5. Evaluate your confidence (0-100%) in your analysis and provide an explanation for this confidence level.\n'
+
+                f'Provide the answer in your final response as "The status is [entailment / not_entailment".')
+        
+        # Tokenise prompt
+        encoding = self.tokenizer(
+            prompt,
+            truncation=True,
+            padding='max_length',
+            add_special_tokens=False,
+            max_length=self.prompt_max_length,
+            return_tensors="pt"
+        ) 
+
+        # Tokenise gold label for training
+        gold_label_ids = self.tokenizer(
+        gold_label,
+        truncation=True,
+        padding="max_length",
+        max_length=self.label_max_length,
+        add_special_tokens=False,
+        return_tensors="pt"
+        )
+        
+        return {"input_ids": encoding["input_ids"].squeeze(),
+            "attention_mask": encoding["attention_mask"].squeeze(),
+            "labels_ids": gold_label_ids["input_ids"].squeeze(),
+            "labels": gold_label,
+            "prompt": prompt}
+
+
+class MyDataset_CoT(Dataset):
+
+    def __init__(self, dataframe, tokenizer, dataset_type, prompt_max_length, label_max_length, training=False):
+        self.dataframe = dataframe
+        self.tokenizer = tokenizer
+        self.dataset_type = dataset_type.split('_')[0]
+        self.prompt_max_length = prompt_max_length
+        self.label_max_length = label_max_length
+        self.training = training
+        
+
+    def __len__(self):
+        return len(self.dataframe)
+
+    def __getitem__(self, idx):
+        item = self.dataframe.iloc[idx]
+        gold_label = item['label']
+
+        # Format the prompt depending on dataset_type
+        if self.dataset_type == "mnli":
+            sentence1 = "premise"
+            sentence2 = "hypothesis"
+            labels = "'contradiction', 'neutral' or 'entailment'"
+        elif self.dataset_type == "qnli":
             sentence1 = "Sentence"
             sentence2 = "Question"
             labels = "'not entailment' or 'entailment'"
@@ -541,26 +666,8 @@ class MyDataset_MP(Dataset):
         else:
             raise ValueError(f"Invalid type: {self.dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
         
-        prompt = (f'For the premise: '
-
-                f'{item[sentence1.lower()]}\nand hypothesis: {item[sentence2.lower()]}, determine if the premise entails the hypothesis.\n'
-
-                f'If the premise supports the hypothesis, the status is "entails".\n'
-                f'If it does not, the status is neutral.\n'
-
-                f'As you perform this task, follow these steps:\n'
-
-                f'1. Clarify your understanding of the hypothesis and the premise.\n'
-
-                f'2. Make a preliminary identification of whether the premise contains the answer to the question.\n'
-
-                f'3. Critically assess your preliminary analysis. If you feel unsure about your initial classification as entails, try to reassess it.\n'
-
-                f'4. Confirm your final answer and explain the reasoning behind your choice.\n'
-
-                f'5. Evaluate your confidence (0-100%) in your analysis and provide an explanation for this confidence level.\n'
-
-                f'Provide the answer in your final response as entails or neutral.')
+        prompt = (f"Does the {sentence1} entail the {sentence2}? "
+                  f"Answer exactly one word in lowercase: {labels}. \n{sentence1}: {item[sentence1.lower()]} \n{sentence2}: {item[sentence2.lower()]} \nAnswer: Let's think step by step.")
         
         # Tokenise prompt
         encoding = self.tokenizer(
