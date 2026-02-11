@@ -11,69 +11,124 @@ import torch.nn.functional as F
 # from captum.attr import InterpretableEmbeddingBase
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, matthews_corrcoef, cohen_kappa_score, ConfusionMatrixDisplay, recall_score, precision_score
 
-def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type: str, examples: str = None) -> Tuple[List[int], List[int]]:
-    """ 
-    Tokenizes the prompt and label, and returns two lists containing the lengths of each tokenized sequence.
+def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type: str, chat_template: bool, examples: str = None, kind: str = 'zero_shot') -> Tuple[List[int], List[int]]:
+    """
+    Tokenizes the prompts and labels, returns lists of token lengths.
 
     Parameters
     ----------
-    df: pandas.DataFrame
-        A DataFrame containing sentence1, sentence2 and label
-    tokenizer: Any
-        A tokenizer instance via AutoTokenizer.from_pretrained().
-    type: str
-        The type of dataset.
-            - "mnli"
-            - "qnli"
-            - "scitail"
+    df : pd.DataFrame
+        DataFrame containing sentence1, sentence2, and label.
+    tokenizer : Any
+        Tokenizer instance (from AutoTokenizer).
+    dataset_type : str
+        One of 'mnli', 'qnli', or 'scitail'.
+    chat_template : bool
+        Whether to use apply_chat_template or normal tokenization.
+    examples : str
+        Few-shot examples to include if kind='few_shot'.
+    kind : str
+        'zero_shot', 'few_shot', 'CoT', or 'MP'.
 
     Returns
     -------
     Tuple[List[int], List[int]]
-        - prompt_token_lengths (List[int]): Lengths of prompts
-        - label_token_lengths (List[int]): Lengths of labels
+        - prompt_token_lengths: List of token lengths for each prompt
+        - label_token_lengths: List of token lengths for each label
     """
+    # Determine sentence names and labels
     dataset_type = dataset_type.split('_')[0]
-    prompt_token_lengths = []
-    label_token_lengths = []
-
     if dataset_type == "mnli":
-        sentence1 = "Hypothesis"
-        sentence2 = "Premise"
-        labels = "'contradiction', 'neutral' or 'entailment'"
+        sentence1, sentence2 = "Hypothesis", "Premise"
+        labels_text = "'contradiction', 'neutral' or 'entailment'"
     elif dataset_type == "qnli":
-        sentence1 = "Sentence"
-        sentence2 = "Question"
-        labels = "'not entailment' or 'entailment'"
+        sentence1, sentence2 = "Sentence", "Question"
+        labels_text = "'not entailment' or 'entailment'"
     elif dataset_type == "scitail":
-        sentence1 = "Hypothesis"
-        sentence2 = "Premise"
-        labels = "'neutral' or 'entails'"
+        sentence1, sentence2 = "Hypothesis", "Premise"
+        labels_text = "'neutral' or 'entails'"
     else:
-        raise ValueError(f"Invalid type: {dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
-    
+        raise ValueError(f"Invalid type: {dataset_type}. Choose 'mnli', 'qnli', or 'scitail'.")
+
+    # Build all prompts in a list
+    prompts = []
     for _, row in df.iterrows():
-        # Create the prompt
-        if examples:
-            prompt = (f"Examples:\n{examples} \nGiven the above examples as reference does the {sentence1} entail the {sentence2} in the following case? "
-                  f"Answer exactly one word in lowercase as in the examples: {labels}. \n{sentence2}: {row[sentence2.lower()]} \n{sentence1}: {row[sentence1.lower()]} \nAnswer:")
+        if kind == 'few_shot':
+            prompt = (f"Examples:\n{examples}\nGiven the above examples as reference does the {sentence1} entail the {sentence2}? "
+                      f"Answer exactly one word in lowercase as in the examples: {labels_text}. "
+                      f"{sentence2}: {row[sentence2.lower()]} "
+                      f"{sentence1}: {row[sentence1.lower()]} "
+                      f"Answer:")
+        elif kind == 'zero_shot':
+            prompt = (f"Does the {sentence1} entail the {sentence2}? Answer exactly one word: {labels_text}. "
+                      f"{sentence2}: {row[sentence2.lower()]} "
+                      f"{sentence1}: {row[sentence1.lower()]} "
+                      f"Answer:")
+        elif kind == 'CoT':
+            prompt = (f"Does the {sentence1} entail the {sentence2}? Answer exactly one word: {labels_text}. "
+                      f"{sentence2}: {row[sentence2.lower()]} "
+                      f"{sentence1}: {row[sentence1.lower()]} "
+                      f"Answer: Let's think step by step.")
+        elif kind == 'MP':
+            prompt = (f"For the question: {row[sentence2.lower()]}\n"
+                      f"and statement: {row[sentence1.lower()]}, determine if the statement provides the answer to the question.\n"
+                      f"If the statement contains the answer to the question, the status is entailment.\n"
+                      f"If it does not, the status is not entailment.\n"
+                      f"As you perform this task, follow these steps:\n"
+                      f"1. Clarify your understanding of the question and the context sentence.\n"
+                      f"2. Make a preliminary identification of whether the context sentence contains the answer.\n"
+                      f"3. Critically assess your preliminary analysis.\n"
+                      f"4. Confirm your final answer and explain your reasoning.\n"
+                      f"5. Evaluate your confidence (0-100%) in your analysis.\n"
+                      f'Provide the answer in your final response as "The status is [entailment / not entailment".')
         else:
-            prompt = f"Does the {sentence1} entail the {sentence2}? \
-                Answer exactly one word: {labels}. \n{sentence2}: {row[sentence2.lower()]} \n{sentence1}: {row[sentence1.lower()]} \nAnswer:"
-        
+            raise ValueError(f"Unknown kind: {kind}")
+        prompts.append(prompt)
 
-        
-        # Tokenize the prompt
-        prompt_token = tokenizer(prompt, add_special_tokens=False)
-        prompt_token_lengths.append(len(prompt_token["input_ids"]))
+    # -----------------------------
+    # Tokenize prompts (batched)
+    # -----------------------------
+    if chat_template:
+        # Apply chat template to all prompts
+        prompt_token_lengths = []
+        for prompt in prompts:
+            messages = [{"role": "user", "content": prompt}]
+            tokens = tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                add_special_tokens=False,
+                return_tensors="pt",
+            )
+            prompt_token_lengths.append(tokens["input_ids"].size(1))  # real sequence length
+    else:
+        # Batch tokenize directly
+        tokenized = tokenizer(
+            prompts,
+            add_special_tokens=False,
+            padding=False,
+            truncation=False,
+            return_tensors=None  # returns list of lists
+        )
+        prompt_token_lengths = [len(x) for x in tokenized["input_ids"]]
 
-        # Tokenize label
-        label_token = tokenizer(row["label"], add_special_tokens=False)
-        label_token_lengths.append(len(label_token["input_ids"]))
+    # -----------------------------
+    # Tokenize labels (batched)
+    # -----------------------------
+    labels = df["label"].astype(str).tolist()
+    tokenized_labels = tokenizer(
+        labels,
+        add_special_tokens=False,
+        padding=False,
+        truncation=False,
+        return_tensors=None
+    )
+    label_token_lengths = [len(x) for x in tokenized_labels["input_ids"]]
+
     return prompt_token_lengths, label_token_lengths
 
 
-def find_max_length(df, tokenizer, dataset_type, examples=None) -> None:
+def find_max_length(df, tokenizer, dataset_type, chat_template, examples=None, kind='zero_shot') -> None:
     """
     Plots a histogram of the prompt lengths and prints the max size.
 
@@ -92,7 +147,7 @@ def find_max_length(df, tokenizer, dataset_type, examples=None) -> None:
     Returns
     -------
     """
-    prompt_lengths, label_lengths = get_lengths(df, tokenizer, dataset_type, examples)
+    prompt_lengths, label_lengths = get_lengths(df, tokenizer, dataset_type, chat_template, examples, kind)
     plt.hist(prompt_lengths, bins=50)
     plt.show()
         
@@ -290,13 +345,14 @@ def get_metrics(gold_labels: list, predicted_labels: list, params: dict, ax) -> 
 
 class MyDataset(Dataset):
 
-    def __init__(self, dataframe, tokenizer, dataset_type, prompt_max_length, label_max_length, training=False):
+    def __init__(self, dataframe, tokenizer, dataset_type, prompt_max_length, label_max_length, chat_template, training=False):
         self.dataframe = dataframe
         self.tokenizer = tokenizer
         self.dataset_type = dataset_type.split('_')[0]
         self.prompt_max_length = prompt_max_length
         self.label_max_length = label_max_length
         self.training = training
+        self.chat_template = chat_template
         
 
     def __len__(self):
@@ -326,14 +382,29 @@ class MyDataset(Dataset):
                   f"Answer exactly one word in lowercase: {labels}. \n{sentence1}: {item[sentence1.lower()]} \n{sentence2}: {item[sentence2.lower()]} \nAnswer:")
         
         # Tokenise prompt
-        encoding = self.tokenizer(
-            prompt,
-            truncation=True,
-            padding='max_length',
-            add_special_tokens=False,
-            max_length=self.prompt_max_length,
-            return_tensors="pt"
-        ) 
+        if self.chat_template:
+            messages = [
+            {"role": "user", "content": prompt}
+            ]
+
+            encoding = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                truncation=True,
+                padding="max_length",
+                max_length=self.prompt_max_length,
+                return_tensors="pt"
+            )
+        else:
+            encoding = self.tokenizer(
+                prompt,
+                truncation=True,
+                padding='max_length',
+                add_special_tokens=False,
+                max_length=self.prompt_max_length,
+                return_tensors="pt"
+            ) 
 
         # Tokenise gold label for training
         gold_label_ids = self.tokenizer(
@@ -443,51 +514,111 @@ def get_labels(dataset_type: str) -> List[str]:
     return labels
 
 
-def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: Any, tokenizer: Any, dataset_type: str) -> torch.Tensor:
+def get_model_probs(batch_input_ids: torch.Tensor, batch_attention_mask: torch.Tensor,
+                    model: Any, tokenizer: Any, dataset_type: str) -> torch.Tensor:
     """
-    Gets as input a batch and gives as output the probabilities of each label. The size of the output depends on the dataset_type specified.
+    Gets as input a batch and gives as output the probabilities of each label.
+    This version uses past_key_values to avoid recomputing the prompt for every label token.
     """
-    dataset_type=dataset_type.split('_')[0]
+    dataset_type = dataset_type.split('_')[0]
     labels = get_labels(dataset_type=dataset_type)
     batch_size = batch_input_ids.size(0)
 
     # Tokenize target labels
     label_ids = [tokenizer.encode(label, add_special_tokens=False) for label in labels]
-    
+
     log_p_list = []
+
     # Loop over each label
     for label_tokens in label_ids:
         log_p = torch.zeros(batch_size, device=batch_input_ids.device, dtype=torch.float32)
-        batch_generated_ids = batch_input_ids.clone()
-        batch_generated_mask = batch_attention_mask.clone()
 
-        # Loop over each token
-        for tid in label_tokens:
-            with torch.no_grad():
-                outputs = model(input_ids=batch_generated_ids, attention_mask=batch_generated_mask)
-                next_token_logits = outputs.logits[:, -1, :]
+        with torch.no_grad():
+            # Run the prompt once
+            outputs = model(
+                input_ids=batch_input_ids,
+                attention_mask=batch_attention_mask,
+                use_cache=True
+            )
+
+            past = outputs.past_key_values
+            next_token_logits = outputs.logits[:, -1, :]
+
+            # Loop over each token in the label
+            for tid in label_tokens:
                 log_probs = F.log_softmax(next_token_logits.float(), dim=-1)
-
-                # Get the probability
                 log_p += log_probs[:, tid]
 
-            # Feed the chosen token as next input to get next token prob to the whole batch
-            tid_batch = torch.full((batch_size, 1), tid, device=batch_input_ids.device, dtype=batch_input_ids.dtype)
-            batch_generated_ids = torch.cat([batch_generated_ids, tid_batch], dim=-1)
-            batch_generated_mask = torch.cat([batch_generated_mask, torch.ones(batch_size, 1, device=batch_attention_mask.device)], dim=-1)
-            
+                # feed only the current token
+                tid_batch = torch.full(
+                    (batch_size, 1),
+                    tid,
+                    device=batch_input_ids.device,
+                    dtype=batch_input_ids.dtype
+                )
+
+                outputs = model(
+                    input_ids=tid_batch,
+                    past_key_values=past,
+                    use_cache=True
+                )
+
+                past = outputs.past_key_values
+                next_token_logits = outputs.logits[:, -1, :]
+
         log_p_list.append(log_p)
 
-    # Normalise
+    # Normalize across labels
     log_p_tensor = torch.stack(log_p_list).float()
     log_p_tensor -= torch.logsumexp(log_p_tensor, dim=0, keepdim=True)
     probs = torch.exp(log_p_tensor.T)
     return probs
 
+# def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: Any, tokenizer: Any, dataset_type: str) -> torch.Tensor:
+#     """
+#     Gets as input a batch and gives as output the probabilities of each label. The size of the output depends on the dataset_type specified.
+#     """
+#     dataset_type=dataset_type.split('_')[0]
+#     labels = get_labels(dataset_type=dataset_type)
+#     batch_size = batch_input_ids.size(0)
+
+#     # Tokenize target labels
+#     label_ids = [tokenizer.encode(label, add_special_tokens=False) for label in labels]
+    
+#     log_p_list = []
+#     # Loop over each label
+#     for label_tokens in label_ids:
+#         log_p = torch.zeros(batch_size, device=batch_input_ids.device, dtype=torch.float32)
+#         batch_generated_ids = batch_input_ids.clone()
+#         batch_generated_mask = batch_attention_mask.clone()
+
+#         # Loop over each token
+#         for tid in label_tokens:
+#             with torch.no_grad():
+#                 outputs = model(input_ids=batch_generated_ids, attention_mask=batch_generated_mask)
+#                 next_token_logits = outputs.logits[:, -1, :]
+#                 log_probs = F.log_softmax(next_token_logits.float(), dim=-1)
+
+#                 # Get the probability
+#                 log_p += log_probs[:, tid]
+
+#             # Feed the chosen token as next input to get next token prob to the whole batch
+#             tid_batch = torch.full((batch_size, 1), tid, device=batch_input_ids.device, dtype=batch_input_ids.dtype)
+#             batch_generated_ids = torch.cat([batch_generated_ids, tid_batch], dim=-1)
+#             batch_generated_mask = torch.cat([batch_generated_mask, torch.ones(batch_size, 1, device=batch_attention_mask.device)], dim=-1)
+            
+#         log_p_list.append(log_p)
+
+    # # Normalise
+    # log_p_tensor = torch.stack(log_p_list).float()
+    # log_p_tensor -= torch.logsumexp(log_p_tensor, dim=0, keepdim=True)
+    # probs = torch.exp(log_p_tensor.T)
+    # return probs
+
 
 class MyDataset_few_shot(Dataset):
 
-    def __init__(self, dataframe, examples, tokenizer, dataset_type, prompt_max_length, label_max_length, training=False):
+    def __init__(self, dataframe, examples, tokenizer, dataset_type, prompt_max_length, label_max_length, chat_template, training=False):
         self.dataframe = dataframe
         self.examples = examples
         self.tokenizer = tokenizer
@@ -495,6 +626,7 @@ class MyDataset_few_shot(Dataset):
         self.prompt_max_length = prompt_max_length
         self.label_max_length = label_max_length
         self.training = training
+        self.chat_template = chat_template
         
 
     def __len__(self):
@@ -524,14 +656,29 @@ class MyDataset_few_shot(Dataset):
                   f"Answer exactly one word in lowercase as in the examples: {labels}. \n{sentence1}: {item[sentence1.lower()]} \n{sentence2}: {item[sentence2.lower()]} \nAnswer:")
         
         # Tokenise prompt
-        encoding = self.tokenizer(
-            prompt,
-            truncation=True,
-            padding='max_length',
-            add_special_tokens=False,
-            max_length=self.prompt_max_length,
-            return_tensors="pt"
-        ) 
+        if self.chat_template:
+            messages = [
+            {"role": "user", "content": prompt}
+            ]
+
+            encoding = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                truncation=True,
+                padding="max_length",
+                max_length=self.prompt_max_length,
+                return_tensors="pt"
+            )
+        else:
+            encoding = self.tokenizer(
+                prompt,
+                truncation=True,
+                padding='max_length',
+                add_special_tokens=False,
+                max_length=self.prompt_max_length,
+                return_tensors="pt"
+            ) 
 
         # Tokenise gold label for training
         gold_label_ids = self.tokenizer(
@@ -552,13 +699,14 @@ class MyDataset_few_shot(Dataset):
 
 class MyDataset_MP(Dataset):
 
-    def __init__(self, dataframe, tokenizer, dataset_type, prompt_max_length, label_max_length, training=False):
+    def __init__(self, dataframe, tokenizer, dataset_type, prompt_max_length, label_max_length, chat_template, training=False):
         self.dataframe = dataframe
         self.tokenizer = tokenizer
         self.dataset_type = dataset_type.split('_')[0]
         self.prompt_max_length = prompt_max_length
         self.label_max_length = label_max_length
         self.training = training
+        self.chat_template = chat_template
         
 
     def __len__(self):
@@ -589,7 +737,7 @@ class MyDataset_MP(Dataset):
                 f'{item[sentence2.lower()]}\nand statement: {item[sentence1.lower()]}, determine if the statement provides the answer to the question.\n'
 
                 f'If the statement contains the answer to the question, the status is entailment.\n'
-                f'If it does not, the status is not_entailment.\n'
+                f'If it does not, the status is not entailment.\n'
 
                 f'As you perform this task, follow these steps:\n'
 
@@ -603,17 +751,32 @@ class MyDataset_MP(Dataset):
 
                 f'5. Evaluate your confidence (0-100%) in your analysis and provide an explanation for this confidence level.\n'
 
-                f'Provide the answer in your final response as "The status is [entailment / not_entailment".')
+                f'Provide the answer in your final response as "The status is [entailment / not entailment".')
         
         # Tokenise prompt
-        encoding = self.tokenizer(
-            prompt,
-            truncation=True,
-            padding='max_length',
-            add_special_tokens=False,
-            max_length=self.prompt_max_length,
-            return_tensors="pt"
-        ) 
+        if self.chat_template:
+            messages = [
+            {"role": "user", "content": prompt}
+            ]
+
+            encoding = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                truncation=True,
+                padding="max_length",
+                max_length=self.prompt_max_length,
+                return_tensors="pt"
+            )
+        else:
+            encoding = self.tokenizer(
+                prompt,
+                truncation=True,
+                padding='max_length',
+                add_special_tokens=False,
+                max_length=self.prompt_max_length,
+                return_tensors="pt"
+            ) 
 
         # Tokenise gold label for training
         gold_label_ids = self.tokenizer(
@@ -634,13 +797,14 @@ class MyDataset_MP(Dataset):
 
 class MyDataset_CoT(Dataset):
 
-    def __init__(self, dataframe, tokenizer, dataset_type, prompt_max_length, label_max_length, training=False):
+    def __init__(self, dataframe, tokenizer, dataset_type, prompt_max_length, chat_template, label_max_length, training=False):
         self.dataframe = dataframe
         self.tokenizer = tokenizer
         self.dataset_type = dataset_type.split('_')[0]
         self.prompt_max_length = prompt_max_length
         self.label_max_length = label_max_length
         self.training = training
+        self.chat_template = chat_template
         
 
     def __len__(self):
@@ -667,17 +831,32 @@ class MyDataset_CoT(Dataset):
             raise ValueError(f"Invalid type: {self.dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
         
         prompt = (f"Does the {sentence1} entail the {sentence2}? "
-                  f"Answer exactly one word in lowercase: {labels}. \n{sentence1}: {item[sentence1.lower()]} \n{sentence2}: {item[sentence2.lower()]} \nAnswer: Let's think step by step.")
+                  f"Provide an answer in one word and then explain the steps you took to reach that conclusion: {labels}. \n{sentence1}: {item[sentence1.lower()]} \n{sentence2}: {item[sentence2.lower()]} \nAnswer: Let's think step by step.")
         
         # Tokenise prompt
-        encoding = self.tokenizer(
-            prompt,
-            truncation=True,
-            padding='max_length',
-            add_special_tokens=False,
-            max_length=self.prompt_max_length,
-            return_tensors="pt"
-        ) 
+        if self.chat_template:
+            messages = [
+            {"role": "user", "content": prompt}
+            ]
+
+            encoding = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                truncation=True,
+                padding="max_length",
+                max_length=self.prompt_max_length,
+                return_tensors="pt"
+            )
+        else:
+            encoding = self.tokenizer(
+                prompt,
+                truncation=True,
+                padding='max_length',
+                add_special_tokens=False,
+                max_length=self.prompt_max_length,
+                return_tensors="pt"
+            ) 
 
         # Tokenise gold label for training
         gold_label_ids = self.tokenizer(
