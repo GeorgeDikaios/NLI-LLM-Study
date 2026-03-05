@@ -11,7 +11,69 @@ import torch.nn.functional as F
 # from captum.attr import InterpretableEmbeddingBase
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, matthews_corrcoef, cohen_kappa_score, ConfusionMatrixDisplay, recall_score, precision_score
 
-def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type: str, chat_template: bool, examples: str = None, kind: str = 'zero_shot') -> Tuple[List[int], List[int]]:
+def make_prompt(row, dataset_type, kind, model_type, examples=None):
+    dataset_type = dataset_type.split('_')[0]
+    system_content, user_content = None, None
+
+    # Format the prompt depending on dataset_type
+    if dataset_type == "mnli":
+        sentence1 = "premise"
+        sentence2 = "hypothesis"
+        labels = "'contradiction', 'neutral' or 'entailment'"
+    elif dataset_type == "qnli":
+        sentence1 = "Sentence"
+        sentence2 = "Question"
+        labels = "'not entailment' or 'entailment'"
+    elif dataset_type == "scitail":
+        sentence1 = "premise"
+        sentence2 = "hypothesis"
+        labels = "'neutral' or 'entails'"
+    else:
+        raise ValueError(f"Invalid type: {dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
+
+    if kind == 'zero_shot':
+        system_content = f"You are an NLI classifier. Does the {sentence1} entail the {sentence2}? Output only one word in lowercase: {labels}."
+        if 'llama' in model_type.lower():
+            user_content = (f"{sentence1}: {row[sentence1.lower()]} \n,"
+                            f"{sentence2}: {row[sentence2.lower()]} \n,"
+                            f"Answer:")
+        else:
+            user_content = (f"Does the {sentence1} entail the {sentence2}?\n"
+                            f"{sentence1}: {row[sentence1.lower()]}\n"
+                            f"{sentence2}: {row[sentence2.lower()]}\n"
+                            f"Answer:")
+    elif kind == "few_shot":
+        if 'llama' in model_type.lower():
+            system_content = f"You are an NLI classifier. Given the following examples, does the {sentence1} entail the {sentence2} in the next case? Answer only one word in lowercase as in the examples: {labels}."
+            user_content = (f"Examples:\n{examples}\n",
+                            f"{sentence1}: {row[sentence1.lower()]} \n",
+                            f"{sentence2}: {row[sentence2.lower()]} \n",
+                            f"Answer:")
+        else:
+            user_content = (f"Examples:\n{examples} \nGiven the above examples as reference does the {sentence1} entail the {sentence2} in the following case? "
+                            f"Answer exactly one word in lowercase as in the examples: {labels}. \n{sentence1}: {row[sentence1.lower()]} \n{sentence2}: {row[sentence2.lower()]} \nAnswer:")
+    elif kind == "with_def":
+        if 'llama' in model_type.lower():
+            system_content = (f"You are an NLI classifier. Given the definitions for each label:",
+                              f"does the {sentence1} entail the {sentence2}? Output only one word in lowercase: {labels}.")
+            user_content = f"{sentence1}: {row[sentence1.lower()]} \n{sentence2}: {row[sentence2.lower()]} \nAnswer:"
+        else:
+            user_content = (f"Given the definitions for each label:\n"
+                            f"Entailment: The hypothesis must be true if the premise is true.\n"
+                            f"Neutral: The truth of the hypothesis cannot be determined from the premise.\n"
+                            f"Does the {sentence1} entail the {sentence2}?\nAnswer exactly one word in lowercase: {labels}.\n"
+                            f"{sentence1}: {row[sentence1.lower()]} \n{sentence2}: {row[sentence2.lower()]} \nAnswer:")
+    else:
+        raise ValueError(f"Unknown kind: {kind}")
+    if "llama" in model_type.lower():
+        return [{"role": "system", "content": system_content}, {"role": "user", "content": user_content}]
+    else:
+        return [{"role": "user", "content": user_content}]
+        
+    
+            
+
+def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type: str, chat_template: bool, examples: str = None, kind: str = 'zero_shot', model_type: str = 'llama') -> Tuple[List[int], List[int]]:
     """
     Tokenizes the prompts and labels, returns lists of token lengths.
 
@@ -36,63 +98,20 @@ def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type: str, chat_te
         - prompt_token_lengths: List of token lengths for each prompt
         - label_token_lengths: List of token lengths for each label
     """
-    # Determine sentence names and labels
-    dataset_type = dataset_type.split('_')[0]
-    if dataset_type == "mnli":
-        sentence1, sentence2 = "Hypothesis", "Premise"
-        labels_text = "'contradiction', 'neutral' or 'entailment'"
-    elif dataset_type == "qnli":
-        sentence1, sentence2 = "Sentence", "Question"
-        labels_text = "'not entailment' or 'entailment'"
-    elif dataset_type == "scitail":
-        sentence1, sentence2 = "Hypothesis", "Premise"
-        labels_text = "'neutral' or 'entails'"
-    else:
-        raise ValueError(f"Invalid type: {dataset_type}. Choose 'mnli', 'qnli', or 'scitail'.")
-
     # Build all prompts in a list
     prompts = []
     for _, row in df.iterrows():
-        if kind == 'few_shot':
-            prompt = (f"Examples:\n{examples}\nGiven the above examples as reference does the {sentence1} entail the {sentence2}? "
-                      f"Answer exactly one word in lowercase as in the examples: {labels_text}. "
-                      f"{sentence2}: {row[sentence2.lower()]} "
-                      f"{sentence1}: {row[sentence1.lower()]} "
-                      f"Answer:")
-        elif kind == 'zero_shot':
-            prompt = (f"Does the {sentence1} entail the {sentence2}? Answer exactly one word: {labels_text}. "
-                      f"{sentence2}: {row[sentence2.lower()]} "
-                      f"{sentence1}: {row[sentence1.lower()]} "
-                      f"Answer:")
-        elif kind == 'CoT':
-            prompt = (f"Does the {sentence1} entail the {sentence2}? Answer exactly one word: {labels_text}. "
-                      f"{sentence2}: {row[sentence2.lower()]} "
-                      f"{sentence1}: {row[sentence1.lower()]} "
-                      f"Answer: Let's think step by step.")
-        elif kind == 'MP':
-            prompt = (f"For the question: {row[sentence2.lower()]}\n"
-                      f"and statement: {row[sentence1.lower()]}, determine if the statement provides the answer to the question.\n"
-                      f"If the statement contains the answer to the question, the status is entailment.\n"
-                      f"If it does not, the status is not entailment.\n"
-                      f"As you perform this task, follow these steps:\n"
-                      f"1. Clarify your understanding of the question and the context sentence.\n"
-                      f"2. Make a preliminary identification of whether the context sentence contains the answer.\n"
-                      f"3. Critically assess your preliminary analysis.\n"
-                      f"4. Confirm your final answer and explain your reasoning.\n"
-                      f"5. Evaluate your confidence (0-100%) in your analysis.\n"
-                      f'Provide the answer in your final response as "The status is [entailment / not entailment".')
-        else:
-            raise ValueError(f"Unknown kind: {kind}")
-        prompts.append(prompt)
+        system_content, user_content = make_prompt(row, dataset_type, kind, model_type, examples)
+        prompts.append(user_content)
 
-    # -----------------------------
-    # Tokenize prompts (batched)
-    # -----------------------------
     if chat_template:
         # Apply chat template to all prompts
         prompt_token_lengths = []
         for prompt in prompts:
-            messages = [{"role": "user", "content": prompt}]
+            messages = [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": prompt}
+            ]
             tokens = tokenizer.apply_chat_template(
                 messages,
                 tokenize=True,
@@ -112,10 +131,7 @@ def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type: str, chat_te
         )
         prompt_token_lengths = [len(x) for x in tokenized["input_ids"]]
 
-    # -----------------------------
-    # Tokenize labels (batched)
-    # -----------------------------
-    labels = df["label"].astype(str).tolist()
+    labels = get_labels(dataset_type=dataset_type)
     tokenized_labels = tokenizer(
         labels,
         add_special_tokens=False,
@@ -128,7 +144,8 @@ def get_lengths(df: pandas.DataFrame, tokenizer: Any, dataset_type: str, chat_te
     return prompt_token_lengths, label_token_lengths
 
 
-def find_max_length(df, tokenizer, dataset_type, chat_template, examples=None, kind='zero_shot') -> None:
+def find_max_length(df: Any, tokenizer: Any, dataset_type: str, model_type: str, chat_template: bool, examples: str = None,
+                     kind: str = 'zero_shot', fraction: float = 0.002) -> None:
     """
     Plots a histogram of the prompt lengths and prints the max size.
 
@@ -147,13 +164,54 @@ def find_max_length(df, tokenizer, dataset_type, chat_template, examples=None, k
     Returns
     -------
     """
-    prompt_lengths, label_lengths = get_lengths(df, tokenizer, dataset_type, chat_template, examples, kind)
+    prompt_lengths, label_lengths = get_lengths(df, tokenizer, dataset_type, chat_template, examples, kind, model_type)
+    
     plt.hist(prompt_lengths, bins=50)
     plt.show()
         
     print("Max prompt length:", max(prompt_lengths))
     print("Max label length:", max(label_lengths))
+    compute_safe_max_length(df, tokenizer, dataset_type, chat_template, examples=examples, kind=kind, fraction=fraction)
 
+def compute_safe_max_length(df: Any, tokenizer: Any, dataset_type: str, chat_template: bool,
+                            examples=None, kind: str = 'zero_shot', fraction: float = 0.002) -> int:
+    """
+    Computes a prompt max length that would truncate at most a given fraction of examples.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Dataset containing sentence1, sentence2, and label.
+    tokenizer : Any
+        Tokenizer instance (from AutoTokenizer).
+    dataset_type : str
+        One of 'mnli', 'qnli', or 'scitail'.
+    chat_template : bool
+        Whether prompts use chat template tokenization.
+    kind : str
+        Prompt type: 'zero_shot', 'few_shot', 'CoT', or 'MP'.
+    fraction : float
+        Fraction of examples allowed to be truncated (default 0.002 = 0.2%).
+
+    Returns
+    -------
+    max_length : int
+        Suggested max token length for prompts.
+    """
+    # Get token lengths without truncation
+    prompt_lengths, _ = get_lengths(df, tokenizer, dataset_type, chat_template, examples=examples, kind=kind)
+
+    lengths = numpy.array(prompt_lengths)
+    # Compute the percentile corresponding to 1 - fraction
+    max_length = int(numpy.percentile(lengths, 100 * (1 - fraction)))
+
+    n_truncated = numpy.sum(lengths > max_length)
+    percent_truncated = n_truncated / len(lengths) * 100
+
+    print(f"Safe prompt_max_length: {max_length} tokens")
+    print(f"This would truncate {n_truncated} examples ({percent_truncated:.3f}%) out of {len(lengths)}")
+
+    return max_length
 
 def test_run(model: Any, dataloader: Any, tokenizer: Any, dataset_type: str) -> Tuple[List[str], List[str]]:
     """
@@ -345,14 +403,17 @@ def get_metrics(gold_labels: list, predicted_labels: list, params: dict, ax) -> 
 
 class MyDataset(Dataset):
 
-    def __init__(self, dataframe, tokenizer, dataset_type, prompt_max_length, label_max_length, chat_template, training=False):
+    def __init__(self, dataframe, tokenizer, dataset_type, model_type, prompt_max_length, label_max_length, chat_template, kind, examples, training=False):
         self.dataframe = dataframe
         self.tokenizer = tokenizer
         self.dataset_type = dataset_type.split('_')[0]
+        self.model_type = model_type
         self.prompt_max_length = prompt_max_length
         self.label_max_length = label_max_length
         self.training = training
         self.chat_template = chat_template
+        self.kind = kind
+        self.examples = examples
         
 
     def __len__(self):
@@ -361,44 +422,35 @@ class MyDataset(Dataset):
     def __getitem__(self, idx):
         item = self.dataframe.iloc[idx]
         gold_label = item['label']
+        system_content, user_content = make_prompt(row=item, dataset_type=self.dataset_type, kind=self.kind, examples=self.examples, model_type=self.model_type)
 
-        # Format the prompt depending on dataset_type
-        if self.dataset_type == "mnli":
-            sentence1 = "premise"
-            sentence2 = "hypothesis"
-            labels = "'contradiction', 'neutral' or 'entailment'"
-        elif self.dataset_type == "qnli":
-            sentence1 = "Sentence"
-            sentence2 = "Question"
-            labels = "'not entailment' or 'entailment'"
-        elif self.dataset_type == "scitail":
-            sentence1 = "premise"
-            sentence2 = "hypothesis"
-            labels = "'neutral' or 'entails'"
-        else:
-            raise ValueError(f"Invalid type: {self.dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
-        
-        prompt = (f"Does the {sentence1} entail the {sentence2}? "
-                  f"Answer exactly one word in lowercase: {labels}. \n{sentence1}: {item[sentence1.lower()]} \n{sentence2}: {item[sentence2.lower()]} \nAnswer:")
-        
         # Tokenise prompt
         if self.chat_template:
-            messages = [
-            {"role": "user", "content": prompt}
-            ]
+            if 'llama' in self.model_type:
+                messages = [
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": user_content}
+                ]
+            else:
+                messages = [
+                    {"role": "user", "content": user_content}
+                ]
 
-            encoding = self.tokenizer.apply_chat_template(
+            formatted_prompt = self.tokenizer.apply_chat_template(
                 messages,
-                tokenize=True,
-                add_generation_prompt=True,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            encoding = self.tokenizer(
+                formatted_prompt,
                 truncation=True,
-                padding="max_length",
+                padding='max_length',
                 max_length=self.prompt_max_length,
                 return_tensors="pt"
             )
         else:
             encoding = self.tokenizer(
-                prompt,
+                user_content,
                 truncation=True,
                 padding='max_length',
                 add_special_tokens=False,
@@ -420,7 +472,8 @@ class MyDataset(Dataset):
             "attention_mask": encoding["attention_mask"].squeeze(),
             "labels_ids": gold_label_ids["input_ids"].squeeze(),
             "labels": gold_label,
-            "prompt": prompt}
+            "prompt": user_content,
+            "formatted_prompt": formatted_prompt if self.chat_template else None}
     
 
 def detect_env() -> str:
@@ -574,6 +627,75 @@ def get_model_probs(batch_input_ids: torch.Tensor, batch_attention_mask: torch.T
     probs = torch.exp(log_p_tensor.T)
     return probs
 
+
+
+def get_flant5_probs(batch_input_ids: torch.Tensor, batch_attention_mask: torch.Tensor,
+                    model: Any, tokenizer: Any, dataset_type: str) -> torch.Tensor:
+    """
+    Gets as input a batch and gives as output the probabilities of each label.
+    This version uses past_key_values to avoid recomputing the prompt for every label token.
+    """
+    dataset_type = dataset_type.split('_')[0]
+    labels = get_labels(dataset_type=dataset_type)
+    batch_size = batch_input_ids.size(0)
+
+    # Tokenize target labels
+    label_ids = [tokenizer.encode(label, add_special_tokens=False) for label in labels]
+
+    log_p_list = []
+
+    # Precompute encoder outputs once for the batch
+    with torch.no_grad():
+        encoder_outputs = model.get_encoder()(
+            input_ids=batch_input_ids,
+            attention_mask=batch_attention_mask
+        )
+
+    # Loop over each label
+    for label_tokens in label_ids:
+        # Initialize the decoder input ids
+        decoder_input_ids = torch.full((batch_size, 1),
+                                        model.config.decoder_start_token_id,
+                                        device=batch_input_ids.device,
+                                        dtype=torch.long)
+        
+        log_p = torch.zeros(batch_size, device=batch_input_ids.device, dtype=torch.float32)
+        
+        past = None
+        
+        for tid in label_tokens:
+            with torch.no_grad():
+                # Run the prompt once
+                outputs = model(
+                    encoder_outputs=encoder_outputs,
+                    attention_mask=batch_attention_mask,
+                    decoder_input_ids=decoder_input_ids,
+                    use_cache=True,
+                    past_key_values=past
+                )
+
+                # Next token logits from decoder
+                next_token_logits = outputs.logits[:, -1, :].float()
+                log_probs = F.log_softmax(next_token_logits, dim=-1)
+                log_p += log_probs[:, tid] / len(label_tokens)
+
+                # Update past_key_values
+                past = outputs.past_key_values
+
+                # Prepare decoder input for next token
+                decoder_input_ids = torch.full((batch_size, 1), tid,
+                                                device=batch_input_ids.device,
+                                                dtype=torch.long)
+                
+        log_p_list.append(log_p)
+
+    # Normalize across labels
+    log_p_tensor = torch.stack(log_p_list)
+    log_p_tensor -= torch.logsumexp(log_p_tensor, dim=0, keepdim=True)
+    probs = torch.exp(log_p_tensor.T)
+    return probs
+
+
 # def get_model_probs(batch_input_ids: List, batch_attention_mask: List, model: Any, tokenizer: Any, dataset_type: str) -> torch.Tensor:
 #     """
 #     Gets as input a batch and gives as output the probabilities of each label. The size of the output depends on the dataset_type specified.
@@ -615,6 +737,89 @@ def get_model_probs(batch_input_ids: torch.Tensor, batch_attention_mask: torch.T
     # probs = torch.exp(log_p_tensor.T)
     # return probs
 
+
+class MyDataset_def(Dataset):
+
+    def __init__(self, dataframe, tokenizer, dataset_type, prompt_max_length, label_max_length, chat_template, training=False):
+        self.dataframe = dataframe
+        self.tokenizer = tokenizer
+        self.dataset_type = dataset_type.split('_')[0]
+        self.prompt_max_length = prompt_max_length
+        self.label_max_length = label_max_length
+        self.training = training
+        self.chat_template = chat_template
+        
+
+    def __len__(self):
+        return len(self.dataframe)
+
+    def __getitem__(self, idx):
+        item = self.dataframe.iloc[idx]
+        gold_label = item['label']
+
+        # Format the prompt depending on dataset_type
+        if self.dataset_type == "mnli":
+            sentence1 = "premise"
+            sentence2 = "hypothesis"
+            labels = "'contradiction', 'neutral' or 'entailment'"
+        elif self.dataset_type == "qnli":
+            sentence1 = "Sentence"
+            sentence2 = "Question"
+            labels = "'not entailment' or 'entailment'"
+        elif self.dataset_type == "scitail":
+            sentence1 = "premise"
+            sentence2 = "hypothesis"
+            labels = "'neutral' or 'entails'"
+        else:
+            raise ValueError(f"Invalid type: {self.dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
+        
+        prompt = (f"Given the definitions for each label:\n"
+                  f"Entailment: The hypothesis must be true if the premise is true.\n"
+                  f"Neutral: The truth of the hypothesis cannot be determined from the premise.\n" 
+                  f"Does the {sentence1} entail the {sentence2}? Answer exactly one word in lowercase: {labels}.\n"
+                  f"{sentence1}: {item[sentence1.lower()]} \n{sentence2}: {item[sentence2.lower()]} \nAnswer:")
+        
+        # Tokenise prompt
+        if self.chat_template:
+            messages = [
+            {"role": "user", "content": prompt}
+            ]
+
+            encoding = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                truncation=True,
+                padding="max_length",
+                max_length=self.prompt_max_length,
+                return_tensors="pt"
+            )
+        else:
+            encoding = self.tokenizer(
+                prompt,
+                truncation=True,
+                padding='max_length',
+                add_special_tokens=False,
+                max_length=self.prompt_max_length,
+                return_tensors="pt"
+            ) 
+
+        # Tokenise gold label for training
+        gold_label_ids = self.tokenizer(
+        gold_label,
+        truncation=True,
+        padding="max_length",
+        max_length=self.label_max_length,
+        add_special_tokens=False,
+        return_tensors="pt"
+        )
+        
+        return {"input_ids": encoding["input_ids"].squeeze(),
+            "attention_mask": encoding["attention_mask"].squeeze(),
+            "labels_ids": gold_label_ids["input_ids"].squeeze(),
+            "labels": gold_label,
+            "prompt": prompt}
+    
 
 class MyDataset_few_shot(Dataset):
 
