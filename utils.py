@@ -643,7 +643,18 @@ def get_model_probs(batch_input_ids: torch.Tensor, batch_attention_mask: torch.T
     probs = torch.exp(log_p_tensor.T)
     return probs
 
-    
+def get_flant5_preds_text_gen(batch_input_ids, batch_attention_mask, model, tokenizer):
+
+    outputs = model.generate(
+        input_ids=batch_input_ids,
+        attention_mask=batch_attention_mask,
+        max_new_tokens=5,
+        do_sample=False)
+
+    batch_labels = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+
+    return batch_labels
+
 # def predict_fn(texts, model, tokenizer, dataset_type):
 #     """
 #     Predict using prompt
