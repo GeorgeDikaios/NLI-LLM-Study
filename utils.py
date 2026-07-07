@@ -128,7 +128,8 @@ def find_max_length(df: Any, tokenizer: Any, dataset_type: str, examples: str = 
         
     print("Max prompt length:", max(prompt_lengths))
     print("Max label length:", max(label_lengths))
-    compute_safe_max_length(df, tokenizer, dataset_type, examples=examples, kind=kind, fraction=fraction)
+    safe_max_legth = compute_safe_max_length(df, tokenizer, dataset_type, examples=examples, kind=kind, fraction=fraction)
+    return safe_max_legth
 
 def compute_safe_max_length(df: Any, tokenizer: Any, dataset_type: str, examples: str = None,
                             kind: str = 'zero_shot', fraction: float = 0.002) -> int:
@@ -169,6 +170,35 @@ def compute_safe_max_length(df: Any, tokenizer: Any, dataset_type: str, examples
     print(f"This would truncate {n_truncated} examples ({percent_truncated:.3f}%) out of {len(lengths)}")
 
     return max_length
+
+def build_nested_shots(df, ids, label_col, sizes):
+    """
+    sizes: sizes for the *combined* nested sets (must include the count of labels, e.g. 2 for binary)
+    Returns:
+      singles: {label: [id]} — one example per label, standalone
+      nested: {size: [ids]} — combined nested sets, size 2 and up
+    """
+    ids = list(ids)
+    labels_seen = set()
+    first_occurrences = []
+    rest = []
+
+    for idx in ids:
+        label = df.loc[idx, label_col]
+        if label not in labels_seen:
+            first_occurrences.append((idx, label))
+            labels_seen.add(label)
+        else:
+            rest.append(idx)
+
+    # standalone singles, keyed by label name
+    singles = {label: [idx] for idx, label in first_occurrences}
+
+    # combined ordering: one-of-each first, then the rest in original order
+    reordered = [idx for idx, label in first_occurrences] + rest
+    nested = {size: reordered[:size] for size in sizes}
+
+    return singles, nested
 
 def test_run(model: Any, dataloader: Any, tokenizer: Any, dataset_type: str) -> Tuple[List[str], List[str]]:
     """
@@ -236,13 +266,14 @@ def load_checkpoint(checkpoint_path):
         checkpoint = torch.load(checkpoint_path)
         predicted_labels = checkpoint["predicted_labels"]
         gold_labels = checkpoint["gold_labels"]
+        all_probs = checkpoint['all_probs']
         start_batch = checkpoint['batch_no']
         print(f"Checkpoint found.")
     else:
-        gold_labels, predicted_labels = [], []
+        gold_labels, predicted_labels, all_probs = [], [], []
         start_batch = 0
         print("No checkpoint found.")
-    return predicted_labels, gold_labels, start_batch
+    return predicted_labels, gold_labels, all_probs, start_batch
 
 
 def hf_login(token_name: str = "HF_TOKEN") -> None:
@@ -537,10 +568,10 @@ def create_checkpoint_path(params: dict) -> str:
     env = detect_env()
     model_id = params['model_id']
     dataset_type = params['dataset_type']
-    quantization = params['quantization']
     training_mode = params['training_mode'].replace(' ', '_')
+    seed_idx = params['seed_idx']
 
-    filename = f"checkpoint_{dataset_type}_{model_id.split('/')[1]}_{quantization}_{training_mode}.pt".replace('-', '_')
+    filename = f"checkpoint_{dataset_type}_{model_id.split('/')[1]}_{training_mode}_{seed_idx}.pt".replace('-', '_')
 
     if env == 'colab':
         checkpoint_dir = "/content/drive/MyDrive/eval_checkpoints"
