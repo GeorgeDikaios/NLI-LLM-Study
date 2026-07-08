@@ -1,5 +1,4 @@
 import os
-import sys
 import utils
 import numpy as np
 import pandas as pd
@@ -105,13 +104,13 @@ for model_id in model_ids:
                 safe_max_length = utils.find_max_length(df_remaining, tokenizer=tokenizer, dataset_type=dataset_name, chat_template=True, examples=prompt_examples, kind='few_shot')
 
                 # Define dataset and create a dataloader.
-                dataset_test = utils.MyDataset_few_shot(dataframe=df_remaining,
-                                                        examples=prompt_examples,
-                                                        tokenizer=tokenizer,
-                                                        dataset_type=dataset_name,
-                                                        prompt_max_length=safe_max_length,
-                                                        label_max_length=3,
-                                                        chat_template=True)
+                dataset_test = utils.MyDataset(dataframe=df_remaining,
+                                                examples=prompt_examples,
+                                                tokenizer=tokenizer,
+                                                dataset_type=dataset_name,
+                                                prompt_max_length=safe_max_length,
+                                                label_max_length=3,
+                                                chat_template=True)
 
                 dataloader = DataLoader(dataset_test, batch_size=BATCH_SIZE, shuffle=False)
 

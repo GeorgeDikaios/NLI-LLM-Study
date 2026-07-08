@@ -7,8 +7,6 @@ from typing import Any, Tuple, List
 from huggingface_hub import login
 from torch.utils.data import Dataset
 import torch.nn.functional as F
-# from captum.attr import visualization as viz
-# from captum.attr import InterpretableEmbeddingBase
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, matthews_corrcoef, cohen_kappa_score, ConfusionMatrixDisplay, recall_score, precision_score
 
 def make_prompt(row, dataset_type, kind, examples=None):
@@ -391,7 +389,7 @@ def get_metrics(gold_labels: list, predicted_labels: list, params: dict, ax) -> 
 
 class MyDataset(Dataset):
 
-    def __init__(self, dataframe, tokenizer, dataset_type, prompt_max_length, label_max_length, kind, examples,training=False):
+    def __init__(self, dataframe, tokenizer, dataset_type, prompt_max_length, label_max_length, kind, examples, training=False):
         self.dataframe = dataframe
         self.tokenizer = tokenizer
         self.dataset_type = dataset_type.split('_')[0]
@@ -440,87 +438,6 @@ class MyDataset(Dataset):
             "labels_ids": gold_label_ids["input_ids"].squeeze(),
             "labels": gold_label,
             "formatted_prompt": raw_prompt_string}
-
-
-# class MyDataset_few_shot(Dataset):
-
-#     def __init__(self, dataframe, examples, tokenizer, dataset_type, prompt_max_length, label_max_length, chat_template, training=False):
-#         self.dataframe = dataframe
-#         self.examples = examples
-#         self.tokenizer = tokenizer
-#         self.dataset_type = dataset_type.split('_')[0]
-#         self.prompt_max_length = prompt_max_length
-#         self.label_max_length = label_max_length
-#         self.training = training
-#         self.chat_template = chat_template
-        
-
-#     def __len__(self):
-#         return len(self.dataframe)
-
-#     def __getitem__(self, idx):
-#         item = self.dataframe.iloc[idx]
-#         gold_label = item['label']
-
-#         # Format the prompt depending on dataset_type
-#         if self.dataset_type == "mnli":
-#             sentence1 = "premise"
-#             sentence2 = "hypothesis"
-#             labels = "'contradiction', 'neutral' or 'entailment'"
-#         elif self.dataset_type == "qnli":
-#             sentence1 = "sentence"
-#             sentence2 = "question"
-#             labels = "'not entailment' or 'entailment'"
-#         elif self.dataset_type == "scitail":
-#             sentence1 = "premise"
-#             sentence2 = "hypothesis"
-#             labels = "'neutral' or 'entails'"
-#         else:
-#             raise ValueError(f"Invalid type: {self.dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
-        
-#         prompt = (f"Examples:\n{self.examples} \nGiven the above examples as reference does the {sentence1} entail the {sentence2} in the following case? "
-#                   f"Answer exactly one word in lowercase as in the examples: {labels}. \n{sentence1}: {item[sentence1.lower()]} \n{sentence2}: {item[sentence2.lower()]} \nAnswer:")
-        
-#         # Tokenise prompt
-#         if self.chat_template:
-#             messages = [
-#             {"role": "user", "content": prompt}
-#             ]
-
-#             encoding = self.tokenizer.apply_chat_template(
-#                 messages,
-#                 tokenize=True,
-#                 add_generation_prompt=True,
-#                 truncation=True,
-#                 padding="max_length",
-#                 max_length=self.prompt_max_length,
-#                 return_tensors="pt"
-#             )
-#         else:
-#             encoding = self.tokenizer(
-#                 prompt,
-#                 truncation=True,
-#                 padding='max_length',
-#                 add_special_tokens=False,
-#                 max_length=self.prompt_max_length,
-#                 return_tensors="pt"
-#             ) 
-
-#         # Tokenise gold label for training
-#         gold_label_ids = self.tokenizer(
-#         gold_label,
-#         truncation=True,
-#         padding="max_length",
-#         max_length=self.label_max_length,
-#         add_special_tokens=False,
-#         return_tensors="pt"
-#         )
-
-#         return {"input_ids": encoding["input_ids"].squeeze(),
-#             "attention_mask": encoding["attention_mask"].squeeze(),
-#             "labels_ids": gold_label_ids["input_ids"].squeeze(),
-#             "labels": gold_label,
-#             "prompt": prompt}
     
 
 def detect_env() -> str:
@@ -569,9 +486,9 @@ def create_checkpoint_path(params: dict) -> str:
     model_id = params['model_id']
     dataset_type = params['dataset_type']
     training_mode = params['training_mode'].replace(' ', '_')
-    seed_idx = params['seed_idx']
+    seed_idx = f"_{params['seed_idx']}" if params['seed_idx'] is not None else ''
 
-    filename = f"checkpoint_{dataset_type}_{model_id.split('/')[1]}_{training_mode}_{seed_idx}.pt".replace('-', '_')
+    filename = f"checkpoint_{dataset_type}_{model_id.split('/')[1]}_{training_mode}{seed_idx}.pt".replace('-', '_')
 
     if env == 'colab':
         checkpoint_dir = "/content/drive/MyDrive/eval_checkpoints"
@@ -673,103 +590,3 @@ def get_model_probs(batch_input_ids: torch.Tensor, batch_attention_mask: torch.T
     log_p_tensor -= torch.logsumexp(log_p_tensor, dim=0, keepdim=True)
     probs = torch.exp(log_p_tensor.T)
     return probs
-
-def get_flant5_preds_text_gen(batch_input_ids, batch_attention_mask, model, tokenizer):
-
-    outputs = model.generate(
-        input_ids=batch_input_ids,
-        attention_mask=batch_attention_mask,
-        max_new_tokens=5,
-        do_sample=False)
-
-    batch_labels = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-
-    return batch_labels
-
-# def predict_fn(texts, model, tokenizer, dataset_type):
-#     """
-#     Predict using prompt
-#     """
-#     # Ensure texts are str
-#     if isinstance(texts, numpy.ndarray):
-#         texts = texts.tolist()
-
-#     inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(model.device)
-#     probs = get_model_probs(inputs['input_ids'], inputs['attention_mask'], model, tokenizer, dataset_type)
-#     probs = F.normalize(probs, p=1, dim=1)
-
-#     return probs.cpu().numpy()
-
-# def predict_fn_pretokenized(input_ids, attention_mask, model, tokenizer, dataset_type):
-#     """
-#     Predict using pre-tokenized input_ids and attention_mask.
-#     """
-#     probs = get_model_probs(input_ids, attention_mask, model, tokenizer, dataset_type)
-#     probs = F.normalize(probs, p=1, dim=1)
-
-#     return probs.cpu().numpy()
-    
-
-# def forward_pass_fn(input_embeds, attention_mask, model, pred_label_id, tokenizer, class_names):
-#     """
-#     This function gives the logit of the next token only, which is an approximation for the whole sequence
-#     """
-#     # Get outputs using embeds
-#     outputs = model(inputs_embeds=input_embeds.requires_grad_(), attention_mask=attention_mask)
-
-#     # Get logits for the last token
-#     last_token_logits = outputs.logits[:, -1, :]
-
-#     # Get the predicted label and get the id
-#     pred_label = class_names[pred_label_id]
-#     pred_label_first_token_id = tokenizer.encode(pred_label, add_special_tokens=False)[0]
-
-#     return last_token_logits[:, pred_label_first_token_id]
-
-# def add_text_to_visualizer(attributions, pred_prob, pred_label, true_label, delta, tokens, data_records):
-#     # Convert attributions to a list
-#     attributions = attributions.sum(dim=2)[0].detach().cpu().numpy()
-#     attributions = attributions / (numpy.max(numpy.abs(attributions)) + 1e-10)
-
-#     # Create a VisualizationDataRecord
-#     data_records.append(viz.VisualizationDataRecord(
-#         word_attributions=attributions,
-#         pred_prob=pred_prob,
-#         pred_class=pred_label,
-#         true_class=true_label,
-#         attr_class=pred_label,
-#         convergence_score=delta,
-#         attr_score=attributions.sum(),
-#         raw_input_ids=tokens
-#     ))
-
-# def interpret_example_IG(model, tokenizer, example_id, ig, data_records, class_names, pred_label_id, pred_prob, dataset):
-#     input_ids = dataset[example_id]['input_ids'].unsqueeze(0).to(model.device)
-#     attention_mask = dataset[example_id]['attention_mask'].unsqueeze(0).to(model.device)
-
-#     interpretable_embeddings = InterpretableEmbeddingBase(model.get_input_embeddings(), "embeds")
-
-#     # Get embeddings from the model's embedding layer using input_ids
-#     input_embeddings = interpretable_embeddings.indices_to_embeddings(input_ids)
-
-#     # Define a baseline to compare
-#     baseline_ids = torch.full_like(input_ids, tokenizer.pad_token_id).to(model.device)
-#     baseline_embeddings = interpretable_embeddings.indices_to_embeddings(baseline_ids)
-    
-#     # Call IG on embeddings
-#     attributions, delta = ig.attribute(
-#         inputs=input_embeddings,
-#         baselines=baseline_embeddings,
-#         additional_forward_args=(attention_mask,),
-#         n_steps=50,
-#         internal_batch_size=1,
-#         return_convergence_delta=True
-#     )
-
-#     # Get true label, predicted label, probability and tokens as text
-#     true_label = dataset[example_id]['labels']
-#     pred_label = class_names[pred_label_id]
-#     tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
-
-#     # Add example to be visualised
-#     add_text_to_visualizer(attributions, pred_prob, pred_label, true_label, delta, tokens, data_records)
