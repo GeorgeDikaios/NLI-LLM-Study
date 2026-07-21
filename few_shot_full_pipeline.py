@@ -32,13 +32,13 @@ mnli_m_ids = np.load('mnli_m_subset_seed_ids.npy')
 scitail_ids = np.load('scitail_subset_seed_ids.npy')
 
 ##### LOAD DATASETS #####
-qnli_val = pd.read_csv('qnli_val.csv')
+qnli_val = pd.read_csv('qnli_val_clean.csv')
 qnli_val["label"] = qnli_val["label"].map({0: "entailment", 1: "not entailment"})
 
-mnli_m_val = pd.read_csv('mnli_m_val.csv')
+mnli_m_val = pd.read_csv('mnli_m_val_clean.csv')
 mnli_m_val["label"] = mnli_m_val["label"].map({0: "entailment", 1: "neutral", 2: "contradiction"})
 
-scitail_test = pd.read_csv('scitail_test.csv')
+scitail_test = pd.read_csv('scitail_test_clean.csv')
 
 #### COMBINE DATASETS AND EXAMPLE SETS ####
 dataset_examples = [
@@ -79,8 +79,6 @@ for model_id in model_ids:
                 **{f"1shot_{lab}": ids for lab, ids in singles.items()},
                 **{f"{size}shot": ids for size, ids in nested.items()}
             }
-            # Drop ALL 15 examples being used
-            df_remaining = dataset.drop(index=example_set)
 
             # LOOP OVER NUMBER OF EXAMPLES
             for shot_name, shot_ids in all_shots.items():

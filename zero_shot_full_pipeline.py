@@ -21,18 +21,17 @@ model_ids = [
     'google/gemma-2-9b-it',
     'meta-llama/Llama-3.1-8B-Instruct',
     'meta-llama/Llama-3.2-3B-Instruct',
-    'mistralai/Mistral-7B-Instruct-v0.3',
-    'microsoft/Phi-4-reasoning'
+    'mistralai/Mistral-7B-Instruct-v0.3'
 ]
 
 ##### LOAD DATASETS #####
-qnli_val = pd.read_csv('qnli_val.csv')
+qnli_val = pd.read_csv('qnli_val_clean.csv')
 qnli_val["label"] = qnli_val["label"].map({0: "entailment", 1: "not entailment"})
 
-mnli_m_val = pd.read_csv('mnli_m_val.csv')
+mnli_m_val = pd.read_csv('mnli_m_val_clean.csv')
 mnli_m_val["label"] = mnli_m_val["label"].map({0: "entailment", 1: "neutral", 2: "contradiction"})
 
-scitail_test = pd.read_csv('scitail_test.csv')
+scitail_test = pd.read_csv('scitail_test_clean.csv')
 
 #### COMBINE DATASETS AND EXAMPLE SETS ####
 datasets = [

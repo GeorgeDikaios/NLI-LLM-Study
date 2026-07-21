@@ -8,6 +8,16 @@ from huggingface_hub import login
 from torch.utils.data import Dataset
 import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, matthews_corrcoef, cohen_kappa_score, ConfusionMatrixDisplay, recall_score, precision_score
+from collections import defaultdict, deque
+
+def parse_shot_name(shot_name):
+    if '_' in shot_name:
+        shot_str, condition = shot_name.split('_', 1)
+        shot_count = int(shot_str.replace('shot', ''))
+    else:
+        shot_count = int(shot_name.replace('shot', ''))
+        condition = None
+    return shot_count, condition
 
 def make_prompt(row, dataset_type, kind, examples=None):
     dataset_type = dataset_type.split('_')[0]
@@ -170,16 +180,10 @@ def compute_safe_max_length(df: Any, tokenizer: Any, dataset_type: str, examples
     return max_length
 
 def build_nested_shots(df, ids, label_col, sizes):
-    """
-    sizes: sizes for the *combined* nested sets (must include the count of labels, e.g. 2 for binary)
-    Returns:
-      singles: {label: [id]} — one example per label, standalone
-      nested: {size: [ids]} — combined nested sets, size 2 and up
-    """
     ids = list(ids)
     labels_seen = set()
     first_occurrences = []
-    rest = []
+    by_label = defaultdict(deque)
 
     for idx in ids:
         label = df.loc[idx, label_col]
@@ -187,15 +191,18 @@ def build_nested_shots(df, ids, label_col, sizes):
             first_occurrences.append((idx, label))
             labels_seen.add(label)
         else:
-            rest.append(idx)
+            by_label[label].append(idx)
 
-    # standalone singles, keyed by label name
     singles = {label: [idx] for idx, label in first_occurrences}
 
-    # combined ordering: one-of-each first, then the rest in original order
-    reordered = [idx for idx, label in first_occurrences] + rest
-    nested = {size: reordered[:size] for size in sizes}
+    label_order = [label for _, label in first_occurrences]
+    reordered = [idx for idx, label in first_occurrences]
+    while any(by_label[l] for l in label_order):
+        for l in label_order:
+            if by_label[l]:
+                reordered.append(by_label[l].popleft())
 
+    nested = {size: reordered[:size] for size in sizes}
     return singles, nested
 
 def test_run(model: Any, dataloader: Any, tokenizer: Any, dataset_type: str) -> Tuple[List[str], List[str]]:
@@ -255,8 +262,8 @@ def load_checkpoint(checkpoint_path):
         A list with the predictions of the model.
     gold_labels: list
         A list with the gold labels.
-    no_answer: int
-        The number of times the model was unable to give an answer.
+    all_probs: list
+        A list of lists with the probabilities per label
     start_batch: int
         The batch where the evaluation will continue from.
     """
