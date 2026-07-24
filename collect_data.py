@@ -14,7 +14,6 @@ datasets = [
     'scitail'
 ]
 
-shot_names = ['1shot_entails', '1shot_neutral', '2shot', '3shot', '5shot', '8shot', '10shot', '15shot']
 seed_idxs = [i for i in range(10)]
 
 rows = []
@@ -22,6 +21,9 @@ rows = []
 for model_id in model_ids:
     for dataset in datasets:
         label_order = utils.get_labels(dataset)
+        num_labels = len(label_order)
+        sizes = sorted(set([num_labels, 3, 5, 8, 10, 15]))
+        shot_names = [f'1shot_{lab}' for lab in label_order] + [f'{size}shot' for size in sizes]
         for shot_name in shot_names:
             for seed_idx in seed_idxs:
                 checkpoint_params = {
@@ -55,6 +57,9 @@ for model_id in model_ids:
 for model_id in model_ids:
     for dataset in datasets:
         label_order = utils.get_labels(dataset)
+        num_labels = len(label_order)
+        sizes = sorted(set([num_labels, 3, 5, 8, 10, 15]))
+        shot_names = [f'1shot_{lab}' for lab in label_order] + [f'{size}shot' for size in sizes]
         checkpoint_params = {
             'model_id': model_id,
             'dataset_type': dataset,

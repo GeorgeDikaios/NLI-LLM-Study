@@ -23,7 +23,7 @@ model_ids = [
     'meta-llama/Llama-3.1-8B-Instruct',
     'meta-llama/Llama-3.2-3B-Instruct',
     'mistralai/Mistral-7B-Instruct-v0.3',
-    'microsoft/Phi-4-reasoning'
+    'microsoft/Phi-4-mini-instruct'
 ]
 
 ##### LOAD DEMONSTRATION EXAMPLES SETS #######
@@ -99,10 +99,10 @@ for model_id in model_ids:
                     prompt_examples += f"Example {i+1}\nQuestion: {row['question']}\nSentence: {row['sentence']}\nAnswer: {row['label']}\n\n"
 
                 # Find the max_length for tokenization to avoid wasting computing.
-                safe_max_length = utils.find_max_length(df_remaining, tokenizer=tokenizer, dataset_type=dataset_name, chat_template=True, examples=prompt_examples, kind='few_shot')
+                safe_max_length = utils.find_max_length(dataset, tokenizer=tokenizer, dataset_type=dataset_name, chat_template=True, examples=prompt_examples, kind='few_shot')
 
                 # Define dataset and create a dataloader.
-                dataset_test = utils.MyDataset(dataframe=df_remaining,
+                dataset_test = utils.MyDataset(dataframe=dataset,
                                                 examples=prompt_examples,
                                                 tokenizer=tokenizer,
                                                 dataset_type=dataset_name,

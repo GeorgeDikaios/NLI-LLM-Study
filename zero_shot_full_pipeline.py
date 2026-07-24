@@ -21,7 +21,8 @@ model_ids = [
     'google/gemma-2-9b-it',
     'meta-llama/Llama-3.1-8B-Instruct',
     'meta-llama/Llama-3.2-3B-Instruct',
-    'mistralai/Mistral-7B-Instruct-v0.3'
+    'mistralai/Mistral-7B-Instruct-v0.3',
+    'microsoft/Phi-4-mini-instruct'
 ]
 
 ##### LOAD DATASETS #####
