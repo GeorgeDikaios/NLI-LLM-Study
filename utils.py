@@ -19,9 +19,9 @@ def parse_shot_name(shot_name):
         condition = None
     return shot_count, condition
 
-def make_prompt(row, dataset_type, kind, examples=None):
+def get_sentence_fields(dataset_type):
     dataset_type = dataset_type.split('_')[0]
-
+    
     # Format the prompt depending on dataset_type
     if dataset_type == "mnli":
         sentence1 = "premise"
@@ -37,6 +37,12 @@ def make_prompt(row, dataset_type, kind, examples=None):
         labels = "'neutral' or 'entails'"
     else:
         raise ValueError(f"Invalid type: {dataset_type}. Choose one of 'mnli', 'qnli' or 'scitail'.")
+    return sentence1, sentence2, labels
+
+def make_prompt(row, dataset_type, kind, examples=None):
+    dataset_type = dataset_type.split('_')[0]
+
+    sentence1, sentence2, labels = get_sentence_fields(dataset_type)
 
     if kind == 'zero_shot':
         user_content = (f"Does the {sentence1} entail the {sentence2}? Answer exactly one word: {labels}\n"
@@ -179,31 +185,46 @@ def compute_safe_max_length(df: Any, tokenizer: Any, dataset_type: str, examples
 
     return max_length
 
-def build_nested_shots(df, ids, label_col, sizes):
-    ids = list(ids)
+def build_nested_shots(subset_df, label_col, sizes):
+    """
+    Takes a DataFrame subset and creates nested shot subsets of increasing sizes.
+    Ensures first occurrence of each label is prioritized for balanced representation.
+    """
     labels_seen = set()
     first_occurrences = []
     by_label = defaultdict(deque)
 
-    for idx in ids:
-        label = df.loc[idx, label_col]
+    for idx, row in subset_df.iterrows():
+        label = row[label_col]
         if label not in labels_seen:
             first_occurrences.append((idx, label))
             labels_seen.add(label)
         else:
             by_label[label].append(idx)
 
-    singles = {label: [idx] for idx, label in first_occurrences}
+    singles_indices = {label: [idx] for idx, label in first_occurrences}
+    
+    singles_dfs = {
+        label: subset_df.loc[idxs] for label, idxs in singles_indices.items()
+    }
 
     label_order = [label for _, label in first_occurrences]
-    reordered = [idx for idx, label in first_occurrences]
+    reordered_indices = [idx for idx, _ in first_occurrences]
+
     while any(by_label[l] for l in label_order):
         for l in label_order:
             if by_label[l]:
-                reordered.append(by_label[l].popleft())
+                reordered_indices.append(by_label[l].popleft())
 
-    nested = {size: reordered[:size] for size in sizes}
-    return singles, nested
+    reordered_df = subset_df.loc[reordered_indices]
+
+    nested_dfs = {
+        size: reordered_df.iloc[:size].copy() 
+        for size in sizes 
+        if size <= len(reordered_df)
+    }
+
+    return singles_dfs, nested_dfs
 
 def test_run(model: Any, dataloader: Any, tokenizer: Any, dataset_type: str) -> Tuple[List[str], List[str]]:
     """
@@ -562,7 +583,8 @@ def get_model_probs(batch_input_ids: torch.Tensor, batch_attention_mask: torch.T
             outputs = model(
                 input_ids=batch_input_ids,
                 attention_mask=batch_attention_mask,
-                use_cache=True
+                use_cache=True,
+                logits_to_keep=1
             )
 
             past = outputs.past_key_values
@@ -584,7 +606,8 @@ def get_model_probs(batch_input_ids: torch.Tensor, batch_attention_mask: torch.T
                 outputs = model(
                     input_ids=tid_batch,
                     past_key_values=past,
-                    use_cache=True
+                    use_cache=True,
+                    logits_to_keep=1
                 )
 
                 past = outputs.past_key_values

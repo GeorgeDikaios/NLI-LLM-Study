@@ -72,7 +72,8 @@ for model_id in model_ids:
         checkpoint_path = utils.create_checkpoint_path(params=checkpoint_params)
 
         # Find the max_length for tokenization to avoid wasting computing.
-        safe_max_length = utils.find_max_length(dataset, tokenizer=tokenizer, dataset_type=dataset_name, chat_template=True, examples=None, kind='zero_shot')
+        safe_max_length = utils.find_max_length(dataset, tokenizer=tokenizer, dataset_type=dataset_name,
+                                                examples=None, kind='zero_shot')
 
         # Define dataset and create a dataloader.
         dataset_test = utils.MyDataset(dataframe=dataset,
@@ -81,7 +82,7 @@ for model_id in model_ids:
                                                 dataset_type=dataset_name,
                                                 prompt_max_length=safe_max_length,
                                                 label_max_length=3,
-                                                chat_template=True)
+                                                kind='zero_shot')
 
         dataloader = DataLoader(dataset_test, batch_size=BATCH_SIZE, shuffle=False)
 

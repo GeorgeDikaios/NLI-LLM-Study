@@ -27,9 +27,16 @@ model_ids = [
 ]
 
 ##### LOAD DEMONSTRATION EXAMPLES SETS #######
-qnli_ids = np.load('qnli_subset_seed_ids.npy')
-mnli_m_ids = np.load('mnli_m_subset_seed_ids.npy')
-scitail_ids = np.load('scitail_subset_seed_ids.npy')
+qnli_subsets_df = pd.read_csv('qnli_few_shot_subsets.csv')
+qnli_subsets_df["label"] = qnli_subsets_df["label"].map({0: "entailment", 1: "not entailment"})
+qnli_examples = [group for _, group in qnli_subsets_df.groupby('seed_id')]
+
+mnli_subsets_df = pd.read_csv('mnli_few_shot_subsets.csv')
+mnli_subsets_df["label"] = mnli_subsets_df["label"].map({0: "entailment", 1: "neutral", 2: "contradiction"})
+mnli_examples = [group for _, group in mnli_subsets_df.groupby('seed_id')]
+
+scitail_subsets_df = pd.read_csv('scitail_few_shot_subsets.csv')
+scitail_examples = [group for _, group in scitail_subsets_df.groupby('seed_id')]
 
 ##### LOAD DATASETS #####
 qnli_val = pd.read_csv('qnli_val_clean.csv')
@@ -42,9 +49,9 @@ scitail_test = pd.read_csv('scitail_test_clean.csv')
 
 #### COMBINE DATASETS AND EXAMPLE SETS ####
 dataset_examples = [
-    ['qnli', qnli_val, qnli_ids],
-    ['mnli_m', mnli_m_val, mnli_m_ids],
-    ['scitail', scitail_test, scitail_ids]
+    ['qnli', qnli_val, qnli_examples],
+    ['mnli_m', mnli_m_val, mnli_examples],
+    ['scitail', scitail_test, scitail_examples]
 ]
 
 # LOOP OVER EACH MODEL FOR EVALUATION
@@ -54,7 +61,8 @@ for model_id in model_ids:
         model_id,
         device_map="auto",
         quantization_config=quantization_config,
-        attn_implementation="eager"
+        attn_implementation="eager",
+        dtype=torch.float16
         )
 
     # Add padding token to the tokenizer
@@ -73,7 +81,7 @@ for model_id in model_ids:
             label_col = 'label'
             num_labels = dataset[label_col].nunique()
             sizes = sorted(set([num_labels, 3, 5, 8, 10, 15]))
-            singles, nested = utils.build_nested_shots(dataset, example_set, label_col, sizes)
+            singles, nested = utils.build_nested_shots(example_set, label_col, sizes)
 
             all_shots = {
                 **{f"1shot_{lab}": ids for lab, ids in singles.items()},
@@ -81,7 +89,7 @@ for model_id in model_ids:
             }
 
             # LOOP OVER NUMBER OF EXAMPLES
-            for shot_name, shot_ids in all_shots.items():
+            for shot_name, shot_examples in all_shots.items():
                 
                 # Create Checkpoint Path
                 checkpoint_params = {
@@ -93,13 +101,14 @@ for model_id in model_ids:
                 checkpoint_path = utils.create_checkpoint_path(params=checkpoint_params)
 
                 # Make examples for prompt
+                sentence1, sentence2, _ = utils.get_sentence_fields(dataset_name)
                 prompt_examples = ''
-                rows = dataset.loc[shot_ids]
-                for i, (_, row) in enumerate(rows.iterrows()):
-                    prompt_examples += f"Example {i+1}\nQuestion: {row['question']}\nSentence: {row['sentence']}\nAnswer: {row['label']}\n\n"
+                for i, (_, row) in enumerate(shot_examples.iterrows()):
+                    prompt_examples += f"Example {i+1}\n{sentence1}: {row[sentence1.lower()]}\n{sentence2}: {row[sentence2.lower()]}\nAnswer: {row['label']}\n\n"
 
                 # Find the max_length for tokenization to avoid wasting computing.
-                safe_max_length = utils.find_max_length(dataset, tokenizer=tokenizer, dataset_type=dataset_name, chat_template=True, examples=prompt_examples, kind='few_shot')
+                safe_max_length = utils.find_max_length(dataset, tokenizer=tokenizer, dataset_type=dataset_name,
+                                                         examples=prompt_examples, kind='few_shot')
 
                 # Define dataset and create a dataloader.
                 dataset_test = utils.MyDataset(dataframe=dataset,
@@ -108,7 +117,7 @@ for model_id in model_ids:
                                                 dataset_type=dataset_name,
                                                 prompt_max_length=safe_max_length,
                                                 label_max_length=3,
-                                                chat_template=True)
+                                                kind='few_shot')
 
                 dataloader = DataLoader(dataset_test, batch_size=BATCH_SIZE, shuffle=False)
 
