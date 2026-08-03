@@ -27,25 +27,25 @@ model_ids = [
 ]
 
 ##### LOAD DEMONSTRATION EXAMPLES SETS #######
-qnli_subsets_df = pd.read_csv('qnli_few_shot_subsets.csv')
+qnli_subsets_df = pd.read_csv('Example_subsets/qnli_few_shot_subsets.csv')
 qnli_subsets_df["label"] = qnli_subsets_df["label"].map({0: "entailment", 1: "not entailment"})
 qnli_examples = [group for _, group in qnli_subsets_df.groupby('seed_id')]
 
-mnli_subsets_df = pd.read_csv('mnli_few_shot_subsets.csv')
+mnli_subsets_df = pd.read_csv('Example_subsets/mnli_few_shot_subsets.csv')
 mnli_subsets_df["label"] = mnli_subsets_df["label"].map({0: "entailment", 1: "neutral", 2: "contradiction"})
 mnli_examples = [group for _, group in mnli_subsets_df.groupby('seed_id')]
 
-scitail_subsets_df = pd.read_csv('scitail_few_shot_subsets.csv')
+scitail_subsets_df = pd.read_csv('Example_subsets/scitail_few_shot_subsets.csv')
 scitail_examples = [group for _, group in scitail_subsets_df.groupby('seed_id')]
 
 ##### LOAD DATASETS #####
-qnli_val = pd.read_csv('qnli_val_clean.csv')
+qnli_val = pd.read_csv('Datasets_clean/qnli_val_clean.csv')
 qnli_val["label"] = qnli_val["label"].map({0: "entailment", 1: "not entailment"})
 
-mnli_m_val = pd.read_csv('mnli_m_val_clean.csv')
+mnli_m_val = pd.read_csv('Datasets_clean/mnli_m_val_clean.csv')
 mnli_m_val["label"] = mnli_m_val["label"].map({0: "entailment", 1: "neutral", 2: "contradiction"})
 
-scitail_test = pd.read_csv('scitail_test_clean.csv')
+scitail_test = pd.read_csv('Datasets_clean/scitail_test_clean.csv')
 
 #### COMBINE DATASETS AND EXAMPLE SETS ####
 dataset_examples = [
