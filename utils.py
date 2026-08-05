@@ -528,7 +528,7 @@ def create_checkpoint_path(params: dict) -> str:
     elif env == 'local':
         script_dir = os.path.dirname(os.path.abspath(__file__))
         checkpoint_dir = os.path.join(script_dir, 'checkpoints')
-        os.makefirs(checkpoint_dir, exist_ok=True)
+        os.makedirs(checkpoint_dir, exist_ok=True)
         checkpoint_path = os.path.join(checkpoint_dir, filename)
 
     print('Saving to:', checkpoint_path)
